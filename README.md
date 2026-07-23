@@ -1,6 +1,6 @@
 # hokankoushi — interpolating lattice
 
-**Live:** https://jelaludo.github.io/hokankoushi/
+**Live:** https://kai-denrei.github.io/hokankoushi/
 
 A browser animation that *looks* like a self-organizing map discovering the shape of data — a
 flat lattice folds onto a 3-D target while sparkles of "activation" roam and shrink — with
