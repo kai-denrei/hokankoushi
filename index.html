@@ -1,0 +1,1523 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>neural sheet</title>
+<!-- Cache-busting: browser-level anti-cache hints. The real control is the HTTP
+     Cache-Control header on the HTML (no-cache) — see CACHING.md / scripts/bust.sh. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
+<meta name="cb" content="9b56c30d">
+<link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #050807; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  /* Debug HUD — hidden until `h`. Tiny monospace cockpit. */
+  #hud {
+    position: fixed; top: 10px; left: 12px;
+    font: 11px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+    color: #7fd8c4; text-shadow: 0 0 6px rgba(0,0,0,.9);
+    white-space: pre; pointer-events: none; opacity: 0;
+    transition: opacity .12s; letter-spacing: .3px;
+  }
+  #hud.on { opacity: .85; }
+  /* Boot status probe — used only by the offline self-test, never shown. */
+  #status { position: fixed; left: -9999px; top: -9999px; }
+
+  /* Corner affordances — invisible until the pointer approaches (opacity eased in JS). */
+  .corner {
+    position: fixed; width: 30px; height: 30px; display: grid; place-items: center;
+    opacity: 0; cursor: pointer; z-index: 20; color: #cfeee6; pointer-events: none;
+    background: none; border: 0; padding: 0; -webkit-tap-highlight-color: transparent;
+    transition: transform .5s cubic-bezier(.4,0,.2,1), color .3s;
+    filter: drop-shadow(0 0 6px rgba(0,0,0,.55));
+  }
+  .corner svg { width: 22px; height: 22px; }
+  .corner:hover { color: #ffe9a3; }
+  .corner.tr { top: 14px; right: 14px; }
+  .corner.br { bottom: 14px; right: 14px; }
+  .corner.tl { top: 14px; left: 14px; }
+  .corner.bl { bottom: 14px; left: 14px; }
+  #gear:hover { transform: rotate(35deg); }
+  #gear.open { color: #ffe9a3; transform: rotate(90deg); }
+  #aboutBtn.open { color: #ffe9a3; }
+  #nextBtn:hover { transform: translateX(2px); }
+
+  /* Explanation panel (bottom-right). */
+  #about {
+    position: fixed; bottom: 52px; right: 14px; width: 340px; z-index: 19;
+    max-height: calc(100vh - 74px); overflow-y: auto;
+    opacity: 0; transform: translateY(6px); pointer-events: none;
+    transition: opacity .28s ease, transform .28s ease;
+    background: rgba(9,16,14,.9); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-radius: 8px; padding: 16px 16px 18px;
+    font: 12.5px/1.62 -apple-system, ui-sans-serif, system-ui, sans-serif; color: rgba(207,238,230,.82);
+  }
+  #about.open { opacity: 1; transform: none; pointer-events: auto; }
+  #about h1 { font-size: 15px; margin: 0 0 2px; color: #eafff8; letter-spacing: .2px; }
+  #about .sub { color: rgba(127,216,196,.7); font-size: 11.5px; margin: 0 0 6px; }
+  #about h2 { font-size: 11px; color: #7fd8c4; margin: 15px 0 5px; text-transform: uppercase; letter-spacing: .9px; }
+  #about p { margin: 0 0 7px; }
+  #about b { color: #eafff8; font-weight: 600; }
+  #about .eq { display: block; margin: 5px 0 9px; padding: 7px 10px; background: rgba(127,216,196,.07);
+               border-radius: 4px; font: 12px/1.5 ui-monospace, Menlo, monospace; color: #dff2ff;
+               overflow-x: auto; white-space: pre-wrap; }
+  #about pre { margin: 6px 0 10px; padding: 9px 11px; background: rgba(255,255,255,.045);
+               border-left: 2px solid rgba(127,216,196,.4); border-radius: 4px; overflow-x: auto; }
+  #about pre code { font: 11.5px/1.55 ui-monospace, Menlo, monospace; color: #cfeee6; white-space: pre; }
+  /* Build/version indicator — 3 shape glyphs keyed to the cache-bust token. */
+  #cbver { display: flex; align-items: center; gap: 9px; margin-top: 15px; padding-top: 12px;
+           border-top: 1px solid rgba(127,216,196,.16); cursor: pointer; user-select: none; }
+  #cbver .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: .9px; color: rgba(127,216,196,.55); }
+  #cbglyphs { display: inline-flex; gap: 4px; }
+  #cbglyphs svg { width: 18px; height: 18px; border-radius: 3px; display: block; }
+  #cbtoken { font: 11px/1 ui-monospace, Menlo, monospace; color: rgba(207,238,230,.55); letter-spacing: .6px; margin-left: auto; }
+  #cbver:hover #cbtoken { color: #ffe9a3; }
+
+  /* Tweakpane host — sits under the gear, hidden until the gear opens it. */
+  #panel {
+    position: fixed; top: 52px; right: 14px; width: 268px; z-index: 19;
+    opacity: 0; transform: translateY(-6px); pointer-events: none;
+    transition: opacity .28s ease, transform .28s ease;
+    max-height: calc(100vh - 66px); overflow-y: auto;
+  }
+  #panel.open { opacity: 1; transform: none; pointer-events: auto; }
+  /* Dark-glass Tweakpane theme tuned to the teal/amber palette. */
+  #panel .tp-dfwv, #panel {
+    --tp-base-background-color: rgba(9,16,14,.82);
+    --tp-base-shadow-color: rgba(0,0,0,.4);
+    --tp-button-background-color: rgba(42,107,93,.5);
+    --tp-button-background-color-hover: rgba(42,107,93,.8);
+    --tp-container-background-color: rgba(255,255,255,.04);
+    --tp-container-background-color-hover: rgba(255,255,255,.08);
+    --tp-input-background-color: rgba(255,255,255,.06);
+    --tp-input-background-color-hover: rgba(255,255,255,.1);
+    --tp-label-foreground-color: rgba(207,238,230,.65);
+    --tp-input-foreground-color: #eafff8;
+    --tp-monitor-foreground-color: #7fd8c4;
+    --tp-groove-foreground-color: rgba(127,216,196,.25);
+    --tp-blade-value-width: 52%;
+  }
+  #panel { backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); border-radius: 8px; }
+</style>
+
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="status">boot</div>
+
+<button id="gear" class="corner tr" aria-label="settings" title="settings">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"></circle>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+  </svg>
+</button>
+<div id="panel"></div>
+
+<button id="nextBtn" class="corner tl" aria-label="next shape" title="next shape">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line>
+  </svg>
+</button>
+
+<button id="aboutBtn" class="corner br" aria-label="about" title="about this project">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+  </svg>
+</button>
+<div id="about">
+  <h1>Neural Sheet</h1>
+  <p class="sub">A faux self-organizing map — all interpolation, zero learning.</p>
+
+  <p>A flat lattice folds onto a 3-D shape while sparks of “activation” roam and shrink,
+     mimicking a SOM discovering the structure of data. Nothing is trained: every frame is
+     pure arithmetic into one shared position buffer.</p>
+
+  <h2>The fold</h2>
+  <p>Each of the 64×64 vertices moves along a straight line from its flat position to its
+     spot on the target shape, by a per-vertex eased progress <code>s</code>:</p>
+  <span class="eq">p(u,v,t) = mix( flat , target , s(u,v,t) ) + wobble</span>
+  <p>A per-vertex <b>stagger</b> offset <code>d</code> delays each vertex so a visible front
+     crosses the sheet instead of everything tweening at once:</p>
+  <span class="eq">raw = clamp( (t/dur − d·spread) / (1−spread) , 0, 1 )
+s   = ease(raw)</span>
+  <p><code>d(u,v)</code> blends radial distance from a seed point with hand-rolled value noise.</p>
+
+  <h2>Annealing overshoot</h2>
+  <p>The easing adds a decaying sine so each region overshoots and settles — it reads as
+     physical annealing, not a CSS transition:</p>
+  <span class="eq">ease(x) = easeInOutQuint(x)
+        + amp·sin(x·π·freq)·(1−x)^decay</span>
+
+  <h2>Wobble</h2>
+  <p>Ambient life displaced along the <b>interpolated surface normal</b> (fabric, not jelly),
+     fading as the fold completes:</p>
+  <span class="eq">wobble = n̂ · amp · (1−gp)^decay · sin(t·freq + φ)</span>
+
+  <h2>Sparkles — the SOM tell</h2>
+  <p>Fake best-matching-unit activations. Per-vertex brightness sums Gaussian neighborhoods
+     whose radius <code>σ</code> <b>shrinks</b> across the run — the signature of a contracting
+     SOM neighborhood:</p>
+  <span class="eq">b = Σ exp( −gridDist² / 2σ² ) · envelope
+σ = mix( σ_start , σ_end , gp )   // wide → narrow</span>
+
+  <h2>Shapes &amp; blend</h2>
+  <p>Every target is a pure function <code>(u,v) ∈ [0,1]² → ℝ³</code>, normalized to a unit
+     sphere so framing is shape-independent. Torus, swiss roll, Möbius, pyramid &amp; bipyramid,
+     two parametric families you can sculpt with sliders — the <b>superformula</b> and
+     <b>spherical harmonics</b> — and a <b>tesseract</b> (nested 4-cube cells rotated in 4-D and
+     perspective-projected). The folded surface is a live blend, and the loop tours through
+     shapes. Node colour can ramp through scientific colormaps (viridis / inferno / turbo):</p>
+  <pre><code>const s = ease(clamp((t/dur - d*spread)/(1-spread),0,1));
+const g = mix(shapeA, shapeB, blend);   // A → B morph
+base    = flat + (g - flat) * s;        // the fold
+pos     = base + normal * wobble;       // ambient life</code></pre>
+
+  <h2>Interaction</h2>
+  <p>The pointer lights nearby nodes (a screen-space Gaussian), clicks drop damped radial
+     waves, and the camera parallaxes toward the cursor:</p>
+  <span class="eq">ripple = amp · exp( −(gridDist − speed·age)² / 2w² ) · e^(−age/τ)</span>
+
+  <p class="sub" style="margin-top:14px">Every value here is one field in a single <code>CONFIG</code>
+     object — the gear (top-right) edits them live.</p>
+
+  <div id="cbver" title="build version — click to copy the token">
+    <span class="lbl">build</span>
+    <span id="cbglyphs"></span>
+    <code id="cbtoken"></code>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+// Bloom addons are loaded lazily (only when CONFIG.render.bloom is on), so the default
+// path depends solely on the core three module and can't break if the addons fail to load.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONFIG — the entire tuning surface. Every knob that shapes the look lives here.
+// Iterating on the animation = editing these constants, never the logic below.
+// ─────────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  lattice: {
+    cols: 64,            // 32–96. >96 needs a perf check
+    rows: 64,
+    flatTilt: 0.15,      // rad, initial sheet tilt so "flat" isn't edge-on
+  },
+
+  morph: {
+    target: 'swissRoll',      // starting shape (any registered target)
+    duration: 14,             // seconds, flat → folded
+    holdFolded: 4,            // seconds at full fold before unfolding
+    holdFlat: 1.2,            // seconds resting at flat between shapes (the "flat space" beat)
+    loopMode: 'tour',         // 'tour' (cycle all shapes) | 'reverse' | 'restart' | 'nextTarget'
+    seedPoint: [0.2, 0.7],    // uv of stagger origin; null = random each loop
+    staggerSpread: 0.55,      // 0–0.9. Higher = wave crawls, lower = uniform tween
+    staggerNoiseMix: 0.35,    // 0 = pure radial wave, 1 = patchy noise
+    staggerNoiseScale: 3.0,   // spatial frequency of the stagger noise
+    overshootAmp: 0.08,       // 0 = clinical, 0.15+ = wobbly jelly
+    overshootFreq: 3,         // lobes of the settle-overshoot
+    overshootDecay: 2.5,      // how fast the overshoot dies toward the target
+  },
+
+  shape: {
+    // The folded target is a live blend of shape A (morph.target) and shape B.
+    targetB: 'torus',    // second shape for the blend
+    blend: 0.0,          // 0 = pure A, 1 = pure B — the continuous morph knob
+    // Superformula (Gielis 3D supershape): m = symmetry, n1..n3 = pinch/pucker.
+    sfM: 8, sfN1: 0.2, sfN2: 1.7, sfN3: 1.7, sfM2: 8,
+    // Spherical-harmonic exponents m0..m7 (integers) — sums of sin/cos lobes.
+    shM0: 4, shM1: 3, shM2: 2, shM3: 3, shM4: 6, shM5: 1, shM6: 2, shM7: 4,
+    tessSpeed: 0.5,      // tesseract 4-D rotation speed (rad/s); 0 = frozen projection
+  },
+
+  wobble: {
+    amp: 0.035,          // world units. 0 disables
+    freq: 1.8,           // Hz-ish
+    decay: 2.0,          // how fast ambient motion dies as the fold completes
+  },
+
+  sparkles: {
+    count: 7,            // concurrent activations; 0 disables the sparkle layer
+    spawnInterval: 420,  // ms between respawns of the oldest activation
+    radiusStart: 9.0,    // grid units — the wide early h_ci neighborhood
+    radiusEnd: 1.2,      // shrink across the run = the SOM tell
+    life: 1600,          // ms per activation
+    attack: 0.15,        // fraction of life spent rising (fast in / slow out)
+    trailDecay: 0.90,    // per frame; 0.85 short tails, 0.96 long comets
+    sizeBoost: 2.2,      // node size multiplier at full brightness
+    frontBias: 0.7,      // 0 = spawn anywhere, 1 = only on the folding front
+  },
+
+  palette: {
+    background: '#050807',
+    wire: '#1d4d44',       // dim teal — must recede
+    wireOpacity: 0.5,
+    nodeBase: '#2a6b5d',
+    nodeHot: '#ffe9a3',    // sparkle peak — warm amber against teal (used when colormap = 'none')
+    colormap: 'none',      // 'none' | 'viridis' | 'inferno' | 'magma' | 'turbo' — maps node brightness through a scientific colormap
+    dust: '#8a7a4a',
+    dustOpacity: 0.25,
+    fog: 0.06,             // exp2 fog density; 0 disables
+  },
+
+  nodes: {
+    baseSize: 2.0,         // px at the reference distance
+    sizeAttenuation: true,
+  },
+
+  dust: {
+    count: 400,            // 0 disables the layer
+    jitter: 0.06,          // offset off the target surface
+  },
+
+  camera: {
+    fov: 40,
+    distance: 3.2,
+    orbitSpeed: 0.04,      // rad/s; slow. 0 = fully static (orbit + bob off)
+    orbitTiltAmp: 0.12,    // gentle vertical bob amplitude
+    driftIn: 0.15,         // fraction of distance to dolly in across the run
+  },
+
+  render: {
+    exposure: 1.1,
+    bloom: false,          // additive UnrealBloomPass glow on the sparkles; true = softer bloom
+    dprCap: 2,
+  },
+
+  mouse: {
+    glow: 0.7,             // cursor light strength (0 disables) — lights nodes near the pointer
+    glowRadius: 0.16,      // screen radius of the cursor light
+    ripple: 0.05,          // click ripple amplitude, world units (0 disables)
+    rippleSpeed: 14,       // wavefront speed, grid units/sec
+    parallax: 0.15,        // camera parallax from pointer position (0 disables)
+  },
+};
+
+// QA/dev override only: ?bloom=1 forces bloom on without editing CONFIG (inert otherwise).
+if (new URLSearchParams(location.search).has('bloom')) CONFIG.render.bloom = true;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hand-rolled value noise (2–3 octave fbm). Deterministic, ~15 lines, no deps.
+// ─────────────────────────────────────────────────────────────────────────────
+function hash2(x, y) {
+  const h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+function smooth(t) { return t * t * (3 - 2 * t); }
+function valueNoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const a = hash2(xi, yi),     b = hash2(xi + 1, yi);
+  const c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  const u = smooth(xf), v = smooth(yf);
+  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+function fbm2(x, y) {
+  let f = 0, amp = 0.5, freq = 1;
+  for (let o = 0; o < 3; o++) { f += amp * valueNoise(x * freq, y * freq); freq *= 2; amp *= 0.5; }
+  return f; // ~[0, 0.9]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Easing — quintic in/out plus the annealing overshoot. `x` may pass through 1
+// (the overshoot); the caller keeps the raw value for position, clamps for bias.
+// ─────────────────────────────────────────────────────────────────────────────
+function easeInOutQuint(x) {
+  return x < 0.5 ? 16 * x * x * x * x * x : 1 - Math.pow(-2 * x + 2, 5) / 2;
+}
+function ease(x) {
+  const m = CONFIG.morph;
+  const over = m.overshootAmp * Math.sin(x * Math.PI * m.overshootFreq) * Math.pow(1 - x, m.overshootDecay);
+  return easeInOutQuint(x) + over;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Targets: pure (u,v) ∈ [0,1]² → vec3. Registered by name, normalized at build
+// so camera framing is target-independent (fit into a ~unit bounding sphere).
+// ─────────────────────────────────────────────────────────────────────────────
+const TAU = Math.PI * 2;
+let tessPhase = 0;   // tesseract 4-D rotation angle, advanced from the pause-aware clock
+const TARGETS = {
+  torus(u, v, out) {
+    const R = 0.7, r = 0.3;
+    const th = u * TAU, ph = v * TAU;
+    out[0] = (R + r * Math.cos(ph)) * Math.cos(th);
+    out[1] = r * Math.sin(ph);
+    out[2] = (R + r * Math.cos(ph)) * Math.sin(th);
+  },
+  swissRoll(u, v, out) {
+    // classic manifold-learning roll — best "unrolling" narrative
+    const t = 1.5 * Math.PI * (1 + 2 * u);   // 1.5π → 4.5π
+    out[0] = t * Math.cos(t) * 0.09;
+    out[1] = (v - 0.5) * 1.6;
+    out[2] = t * Math.sin(t) * 0.09;
+  },
+  sphereBand(u, v, out) {
+    // band wrapping a sphere with a seam gap; poles avoided so edges never pinch
+    const gap = 0.18;
+    const lon = (gap + u * (TAU - 2 * gap));
+    const lat = (0.16 * Math.PI) + v * (0.68 * Math.PI);
+    const R = 0.95;
+    out[0] = R * Math.sin(lat) * Math.cos(lon);
+    out[1] = R * Math.cos(lat);
+    out[2] = R * Math.sin(lat) * Math.sin(lon);
+  },
+  mobius(u, v, out) {
+    const R = 0.7, width = 0.5;
+    const s = u * TAU;
+    const w = (v - 0.5) * width;
+    const c = R + w * Math.cos(s / 2);
+    out[0] = c * Math.cos(s);
+    out[1] = c * Math.sin(s);
+    out[2] = w * Math.sin(s / 2);
+  },
+  superformula(u, v, out) {
+    // Gielis 3D supershape: spherical product of two superformulae (a=b=1).
+    const c = CONFIG.shape;
+    const theta = (u - 0.5) * TAU;         // −π..π  (longitude)
+    const phi = (v - 0.5) * Math.PI;       // −π/2..π/2 (latitude)
+    const r1 = superShape(theta, c.sfM,  c.sfN1, c.sfN2, c.sfN3);
+    const r2 = superShape(phi,   c.sfM2, c.sfN1, c.sfN2, c.sfN3);
+    out[0] = r1 * Math.cos(theta) * r2 * Math.cos(phi);
+    out[1] = r2 * Math.sin(phi);
+    out[2] = r1 * Math.sin(theta) * r2 * Math.cos(phi);
+  },
+  sphericalHarmonic(u, v, out) {
+    // Radius modulated by a sum of harmonic lobes (Bourke-style); m0..m7 integers.
+    const c = CONFIG.shape;
+    const theta = u * TAU, phi = v * Math.PI;
+    const r = Math.pow(Math.sin(c.shM0 * phi),   c.shM1)
+            + Math.pow(Math.cos(c.shM2 * phi),   c.shM3)
+            + Math.pow(Math.sin(c.shM4 * theta), c.shM5)
+            + Math.pow(Math.cos(c.shM6 * theta), c.shM7);
+    out[0] = r * Math.sin(phi) * Math.cos(theta);
+    out[1] = r * Math.cos(phi);
+    out[2] = r * Math.sin(phi) * Math.sin(theta);
+  },
+  tesseract(u, v, out) {
+    // Nested cubes: the sheet's lower half (v<0.5) wraps the OUTER 4-cube cell (w=+1),
+    // its upper half the INNER cell (w=−1). Each is a spherified-cube surface; both are
+    // rotated together in the x–w and z–w planes by tessPhase and perspective-projected
+    // to 3-D. Different w → different projected size (nested), and the 4-D rotation is the
+    // hypercube's signature inside-out morph. The pole seam links the two cubes (its edges).
+    const th = u * TAU;
+    const outer = v < 0.5;
+    const lat = outer ? v * 2 : (v - 0.5) * 2;              // 0..1 within the chosen cube
+    // Inset from the poles (no centre spike); inner shell's latitude is REVERSED so the two
+    // shells meet at the same (bottom) pole → the seam collapses instead of spanning the interior.
+    const ph = (outer ? 0.1 + lat * 0.8 : 0.9 - lat * 0.8) * Math.PI;
+    let x = Math.sin(ph) * Math.cos(th), y = Math.cos(ph), z = Math.sin(ph) * Math.sin(th);
+    const m = Math.max(Math.abs(x), Math.abs(y), Math.abs(z)) || 1;   // sphere → cube surface
+    x /= m; y /= m; z /= m;
+    const w = outer ? 1 : -1;                                // near (big) vs far (small) cube
+    const a = tessPhase, b = tessPhase * 0.7;
+    const x1 = x * Math.cos(a) - w * Math.sin(a),  w1 = x * Math.sin(a) + w * Math.cos(a);
+    const z1 = z * Math.cos(b) - w1 * Math.sin(b), w2 = z * Math.sin(b) + w1 * Math.cos(b);
+    const D = 3.0, s = D / (D - w2);                          // 4-D perspective projection
+    out[0] = x1 * s; out[1] = y * s; out[2] = z1 * s;
+  },
+  pyramid(u, v, out) {
+    // Square pyramid: u traces the square perimeter, v climbs base(0)→apex(1) where the
+    // cross-section shrinks to a point. The 4 lateral faces (apex pinch like a pole).
+    const p = squarePerim(u), sc = 1 - v;
+    out[0] = p[0] * sc * 0.95;
+    out[1] = (v - 0.4) * 1.5;
+    out[2] = p[1] * sc * 0.95;
+  },
+  bipyramid(u, v, out) {
+    // Double (inverted) pyramid — two square pyramids joined at a shared middle square:
+    // apex at bottom (v=0) and top (v=1), widest at v=0.5. A diamond / square octahedron.
+    const p = squarePerim(u), sc = 1 - Math.abs(2 * v - 1);
+    out[0] = p[0] * sc * 0.95;
+    out[1] = (2 * v - 1) * 1.05;
+    out[2] = p[1] * sc * 0.95;
+  },
+};
+// Point on the unit-square perimeter (xz), u∈[0,1] walking the 4 edges. Sharp corners.
+function squarePerim(u) {
+  const s = (u - Math.floor(u)) * 4;
+  if (s < 1) return [-1 + 2 * s, -1];
+  if (s < 2) return [1, -1 + 2 * (s - 1)];
+  if (s < 3) return [1 - 2 * (s - 2), 1];
+  return [-1, 1 - 2 * (s - 3)];
+}
+// Superformula radius; clamped finite so a degenerate param set can't blow up normalize.
+function superShape(angle, m, n1, n2, n3) {
+  const t = m * angle / 4;
+  const a = Math.pow(Math.abs(Math.cos(t)), n2);
+  const b = Math.pow(Math.abs(Math.sin(t)), n3);
+  const r = Math.pow(a + b, -1 / Math.max(1e-3, n1));
+  return Number.isFinite(r) ? Math.min(r, 1e3) : 0;
+}
+const TARGET_NAMES = ['torus', 'swissRoll', 'sphereBand', 'mobius', 'superformula', 'sphericalHarmonic', 'tesseract', 'pyramid', 'bipyramid'];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// State + buffers (allocated once).
+// ─────────────────────────────────────────────────────────────────────────────
+const COLS = CONFIG.lattice.cols, ROWS = CONFIG.lattice.rows;
+const N = COLS * ROWS;
+
+const flat    = new Float32Array(N * 3);   // flat sheet positions
+const target  = new Float32Array(N * 3);   // shape A target positions (normalized)
+const targetB = new Float32Array(N * 3);   // shape B target — blended with A each frame
+const basePos = new Float32Array(N * 3);   // interpolated positions before wobble
+const positions = new Float32Array(N * 3); // final positions uploaded to the GPU
+const bright  = new Float32Array(N);       // per-vertex sparkle brightness (with trail)
+
+const noiseArr = new Float32Array(N);      // stagger noise field, 0..1
+const phaseArr = new Float32Array(N);      // coherent wobble phase, radians
+const dArr     = new Float32Array(N);      // stagger offset d(u,v), 0..1
+const sArr     = new Float32Array(N);      // current clamped progress (for front bias)
+const weights  = new Float32Array(N);      // scratch for weighted sparkle spawn
+
+let seed = CONFIG.morph.seedPoint ? CONFIG.morph.seedPoint.slice() : [Math.random(), Math.random()];
+let currentTarget = CONFIG.morph.target;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Precompute: flat sheet, noise/phase fields, target, stagger.
+// ─────────────────────────────────────────────────────────────────────────────
+const SPAN = 0.9;              // flat half-extent in world units
+function buildFlat() {
+  const tilt = CONFIG.lattice.flatTilt;
+  const ct = Math.cos(tilt), st = Math.sin(tilt);
+  for (let v = 0; v < ROWS; v++) {
+    for (let u = 0; u < COLS; u++) {
+      const i = v * COLS + u, i3 = i * 3;
+      const x = (u / (COLS - 1) - 0.5) * 2 * SPAN;
+      const z = (v / (ROWS - 1) - 0.5) * 2 * SPAN;
+      flat[i3]     = x;
+      flat[i3 + 1] = -z * st;   // tilt about X so the plane isn't edge-on
+      flat[i3 + 2] =  z * ct;
+    }
+  }
+}
+
+function buildNoiseFields() {
+  const sc = CONFIG.morph.staggerNoiseScale;
+  for (let v = 0; v < ROWS; v++) {
+    for (let u = 0; u < COLS; u++) {
+      const i = v * COLS + u;
+      const uu = u / (COLS - 1), vv = v / (ROWS - 1);
+      // Raw fbm noise (spec: noise = fbm2(u*scale, v*scale)) fed straight into the stagger mix.
+      noiseArr[i] = fbm2(uu * sc, vv * sc);
+      // Offset sample for a coherent, neighbor-correlated wobble phase from the same field.
+      phaseArr[i] = fbm2(uu * sc + 13.7, vv * sc + 7.3) * TAU;
+    }
+  }
+}
+
+// Sample a named shape over the grid into `arr`, recentered + scaled to a unit
+// bounding sphere so every shape (and any blend of two) frames identically.
+function sampleShape(name, arr) {
+  const fn = TARGETS[name] || TARGETS.torus;
+  const out = [0, 0, 0];
+  let cx = 0, cy = 0, cz = 0;
+  for (let v = 0; v < ROWS; v++) {
+    for (let u = 0; u < COLS; u++) {
+      const i3 = (v * COLS + u) * 3;
+      fn(u / (COLS - 1), v / (ROWS - 1), out);
+      let x = out[0], y = out[1], z = out[2];
+      if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))) x = y = z = 0;
+      arr[i3] = x; arr[i3 + 1] = y; arr[i3 + 2] = z;
+      cx += x; cy += y; cz += z;
+    }
+  }
+  cx /= N; cy /= N; cz /= N;
+  let maxR = 1e-6;
+  for (let i = 0; i < N; i++) {
+    const i3 = i * 3;
+    const dx = arr[i3] - cx, dy = arr[i3 + 1] - cy, dz = arr[i3 + 2] - cz;
+    const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (r > maxR) maxR = r;
+  }
+  const scale = 1.0 / maxR;
+  for (let i = 0; i < N; i++) {
+    const i3 = i * 3;
+    arr[i3]     = (arr[i3]     - cx) * scale;
+    arr[i3 + 1] = (arr[i3 + 1] - cy) * scale;
+    arr[i3 + 2] = (arr[i3 + 2] - cz) * scale;
+  }
+}
+function buildTarget(name)  { sampleShape(name, target); }
+function buildTargetB(name) { sampleShape(name, targetB); }
+
+function buildStagger() {
+  // d = mix(radial, noise, staggerNoiseMix); radial depends on the current seed.
+  const mix = CONFIG.morph.staggerNoiseMix;
+  const su = seed[0], sv = seed[1];
+  let maxD = 1e-6;
+  for (let v = 0; v < ROWS; v++) {
+    for (let u = 0; u < COLS; u++) {
+      const i = v * COLS + u;
+      const du = u / (COLS - 1) - su, dv = v / (ROWS - 1) - sv;
+      const r = Math.sqrt(du * du + dv * dv);
+      if (r > maxD) maxD = r;
+      dArr[i] = r; // temporarily hold raw radial distance
+    }
+  }
+  for (let i = 0; i < N; i++) {
+    const radial = dArr[i] / maxD;         // 0..1
+    dArr[i] = radial * (1 - mix) + noiseArr[i] * mix;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Three.js scene: shared position buffer feeds both the wireframe and the nodes.
+// ─────────────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.render.dprCap));
+renderer.setSize(window.innerWidth, window.innerHeight);
+THREE.ColorManagement.enabled = false;                       // hand-tuned sRGB palette, WYSIWYG
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;       // passthrough: keeps the direct and
+                                                             // bloom-composer paths from sRGB-encoding twice
+
+const scene = new THREE.Scene();
+const bgColor = new THREE.Color(CONFIG.palette.background);
+scene.background = bgColor;
+// Always create fog (density may be 0 = no effect) so it can be tuned live from the panel.
+scene.fog = new THREE.FogExp2(bgColor.getHex(), CONFIG.palette.fog);
+
+const camera = new THREE.PerspectiveCamera(
+  CONFIG.camera.fov, window.innerWidth / window.innerHeight, 0.01, 100);
+
+// One position attribute, shared by the wire + node geometries (the "shared buffer").
+const posAttr = new THREE.BufferAttribute(positions, 3);
+posAttr.setUsage(THREE.DynamicDrawUsage);
+const brightAttr = new THREE.BufferAttribute(bright, 1);
+brightAttr.setUsage(THREE.DynamicDrawUsage);
+
+// Layer 1 — wireframe over horizontal + vertical grid edges.
+const wireGeo = new THREE.BufferGeometry();
+wireGeo.setAttribute('position', posAttr);
+{
+  const idx = [];
+  for (let v = 0; v < ROWS; v++) {
+    for (let u = 0; u < COLS; u++) {
+      const i = v * COLS + u;
+      if (u < COLS - 1) idx.push(i, i + 1);       // horizontal neighbor
+      if (v < ROWS - 1) idx.push(i, i + COLS);    // vertical neighbor
+    }
+  }
+  wireGeo.setIndex(idx);
+}
+const wireMat = new THREE.LineBasicMaterial({
+  color: new THREE.Color(CONFIG.palette.wire).multiplyScalar(CONFIG.render.exposure),
+  transparent: true, opacity: CONFIG.palette.wireOpacity, depthWrite: false, fog: true,
+});
+const wire = new THREE.LineSegments(wireGeo, wireMat);
+wire.frustumCulled = false;
+scene.add(wire);
+
+// Layer 2 — nodes as additive points; color + size driven per-vertex by brightness.
+const nodeGeo = new THREE.BufferGeometry();
+nodeGeo.setAttribute('position', posAttr);
+nodeGeo.setAttribute('aBright', brightAttr);
+const nodeMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uBase:      { value: new THREE.Color(CONFIG.palette.nodeBase) },
+    uHot:       { value: new THREE.Color(CONFIG.palette.nodeHot) },
+    uBaseSize:  { value: CONFIG.nodes.baseSize },
+    uSizeBoost: { value: CONFIG.sparkles.sizeBoost },
+    uSizeScale: { value: CONFIG.camera.distance },
+    uDpr:       { value: renderer.getPixelRatio() },
+    uAtten:     { value: CONFIG.nodes.sizeAttenuation ? 1 : 0 },
+    uExposure:  { value: CONFIG.render.exposure },
+    uFogDensity:{ value: CONFIG.palette.fog },   // match the wire/dust FogExp2 falloff
+    uCursor:    { value: new THREE.Vector2(0, 0) },     // pointer in NDC
+    uCursorGlow:{ value: 0 },                            // eased cursor-light strength
+    uCursorR:   { value: CONFIG.mouse.glowRadius },
+    uAspect:    { value: window.innerWidth / window.innerHeight },
+    uColormap:  { value: 0 },   // 0 = none (base→hot); 1 viridis 2 inferno 3 magma 4 turbo
+  },
+  vertexShader: /* glsl */`
+    attribute float aBright;
+    uniform float uBaseSize, uSizeBoost, uSizeScale, uDpr;
+    uniform int uAtten;
+    uniform vec2 uCursor;
+    uniform float uCursorGlow, uCursorR, uAspect;
+    varying float vBright;
+    varying float vFogDepth;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vFogDepth = -mv.z;
+      vec4 clip = projectionMatrix * mv;
+      // Screen-space cursor light: nodes near the pointer glow + swell (skip if behind camera).
+      float glow = 0.0;
+      if (uCursorGlow > 0.001 && clip.w > 0.0) {
+        vec2 ndc = clip.xy / clip.w;
+        float dx = (ndc.x - uCursor.x) * uAspect;
+        float dy = ndc.y - uCursor.y;
+        glow = uCursorGlow * exp(-(dx * dx + dy * dy) / (2.0 * uCursorR * uCursorR));
+      }
+      float bril = aBright + glow;
+      vBright = bril;
+      // Clamp brightness into the size term so overlaps/glow never balloon a point.
+      float size = uBaseSize * (1.0 + min(bril, 1.0) * uSizeBoost);
+      float ps = size * uDpr;
+      if (uAtten == 1) ps *= uSizeScale / max(0.001, -mv.z);
+      gl_PointSize = min(ps, 96.0);            // safety cap vs. near/behind-camera vertices
+      gl_Position = clip;
+    }`,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    uniform vec3 uBase, uHot;
+    uniform float uExposure, uFogDensity;
+    uniform int uColormap;
+    varying float vBright;
+    varying float vFogDepth;
+    // Perceptually-uniform colormaps as 6th-order polynomials (Matt Zucker approximations).
+    vec3 cmViridis(float t){
+      const vec3 c0=vec3(0.2777,0.0054,0.3341),c1=vec3(0.1051,1.4046,1.3846),c2=vec3(-0.3308,0.2148,0.0951);
+      const vec3 c3=vec3(-4.6342,-5.7991,-19.3324),c4=vec3(6.2283,14.1799,56.6906),c5=vec3(4.7764,-13.7451,-65.3530),c6=vec3(-5.4355,4.6459,26.3124);
+      return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6))))); }
+    vec3 cmInferno(float t){
+      const vec3 c0=vec3(0.0002,0.0017,-0.0195),c1=vec3(0.1065,0.5640,3.9327),c2=vec3(11.6025,-3.9729,-15.9424);
+      const vec3 c3=vec3(-41.7040,17.4364,44.3541),c4=vec3(77.1629,-33.4024,-81.8073),c5=vec3(-71.3194,32.6261,73.2095),c6=vec3(25.1311,-12.2427,-23.0703);
+      return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6))))); }
+    vec3 cmMagma(float t){
+      const vec3 c0=vec3(-0.0021,-0.0007,-0.0054),c1=vec3(0.2517,0.6775,2.4940),c2=vec3(8.3537,-3.5777,0.3145);
+      const vec3 c3=vec3(-27.6687,14.2647,-13.6492),c4=vec3(52.1761,-27.9436,12.9442),c5=vec3(-50.7685,29.0466,4.2342),c6=vec3(18.6557,-11.4898,-5.6020);
+      return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6))))); }
+    vec3 cmTurbo(float t){
+      const vec3 c0=vec3(0.1141,0.0629,0.2248),c1=vec3(6.7164,3.1823,7.5716),c2=vec3(-66.0940,-4.9280,-10.0944);
+      const vec3 c3=vec3(228.7661,25.0499,-91.5411),c4=vec3(-334.8352,-69.3175,288.5859),c5=vec3(218.7637,67.5215,-305.2046),c6=vec3(-52.8890,-21.5453,110.5175);
+      return c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6))))); }
+    vec3 colormap(int m, float t){
+      if (m==1) return cmViridis(t); if (m==2) return cmInferno(t);
+      if (m==3) return cmMagma(t);   if (m==4) return cmTurbo(t);
+      return vec3(0.0);
+    }
+    void main() {
+      vec2 pc = gl_PointCoord - 0.5;
+      float d = dot(pc, pc);
+      if (d > 0.25) discard;                 // round sprite
+      float soft = smoothstep(0.25, 0.0, d);
+      float bb = clamp(vBright, 0.0, 1.0);
+      vec3 col = (uColormap > 0 ? max(vec3(0.0), colormap(uColormap, bb)) : mix(uBase, uHot, bb)) * uExposure;
+      // FogExp2 attenuation on the additive contribution so far nodes recede like the wire.
+      float fog = exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
+      // Base nodes stay subliminal (the wire carries the sheet); sparkles pop.
+      // Keep the alpha gain modest so overlapping additive halos don't flood to white.
+      gl_FragColor = vec4(col, soft * (0.035 + 0.72 * bb) * fog);
+    }`,
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true,
+});
+const nodes = new THREE.Points(nodeGeo, nodeMat);
+nodes.frustumCulled = false;
+scene.add(nodes);
+
+// Layer 3 — dust: faint particles that ride the target surface (the "data"). Each dust
+// point keeps a STABLE lattice vertex (dustVi) + jitter, so when the shape changes it
+// eases from its old spot to the same vertex on the new shape instead of teleporting.
+let dust = null, dustPos = null, dustVi = null, dustJit = null;
+function buildDust() {
+  if (dust) { scene.remove(dust); dust.geometry.dispose(); dust.material.dispose(); dust = null; }
+  const count = CONFIG.dust.count;
+  if (count <= 0) { dustPos = null; return; }
+  const j = CONFIG.dust.jitter;
+  dustPos = new Float32Array(count * 3);
+  dustVi  = new Int32Array(count);
+  dustJit = new Float32Array(count * 3);
+  for (let k = 0; k < count; k++) {
+    dustVi[k] = (Math.random() * N) | 0;
+    dustJit[k * 3]     = (Math.random() - 0.5) * j;
+    dustJit[k * 3 + 1] = (Math.random() - 0.5) * j;
+    dustJit[k * 3 + 2] = (Math.random() - 0.5) * j;
+  }
+  updateDust(1);                                   // snap to the current target on (re)build
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+  const m = new THREE.PointsMaterial({
+    color: new THREE.Color(CONFIG.palette.dust).multiplyScalar(CONFIG.render.exposure),
+    // tiny world-space points, normal blending so they can never stack to white
+    size: 0.02, sizeAttenuation: true, transparent: true, opacity: CONFIG.palette.dustOpacity,
+    depthWrite: false, fog: true,
+  });
+  dust = new THREE.Points(g, m);
+  dust.frustumCulled = false;
+  scene.add(dust);
+}
+// Ease dust toward the current (blended) target so shape switches glide, never jump.
+function updateDust(rate) {
+  if (!dustPos) return;
+  const bl = CONFIG.shape.blend, count = CONFIG.dust.count;
+  for (let k = 0; k < count; k++) {
+    const vi3 = dustVi[k] * 3, k3 = k * 3;
+    for (let c = 0; c < 3; c++) {
+      const to = target[vi3 + c] + (targetB[vi3 + c] - target[vi3 + c]) * bl + dustJit[k3 + c];
+      dustPos[k3 + c] += (to - dustPos[k3 + c]) * rate;
+    }
+  }
+  if (dust) dust.geometry.attributes.position.needsUpdate = true;
+}
+
+// Optional bloom (CONFIG.render.bloom). When off, the render path is the plain
+// renderer — additive blending alone carries the glow. When on, an UnrealBloomPass
+// softens the sparkle highlights. `composer` stays null unless bloom is enabled.
+let composer = null;
+async function buildComposer() {
+  if (composer) { composer.dispose(); composer = null; }   // tear down when rebuilt/disabled
+  if (!CONFIG.render.bloom) return;
+  const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }] = await Promise.all([
+    import('three/addons/postprocessing/EffectComposer.js'),
+    import('three/addons/postprocessing/RenderPass.js'),
+    import('three/addons/postprocessing/UnrealBloomPass.js'),
+  ]);
+  const c = new EffectComposer(renderer);
+  c.setPixelRatio(renderer.getPixelRatio());
+  c.setSize(window.innerWidth, window.innerHeight);
+  c.addPass(new RenderPass(scene, camera));
+  // (resolution, strength, radius, threshold) — bloom only the bright warm sparkles.
+  c.addPass(new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight), 0.85, 0.5, 0.15));
+  composer = c;   // becomes active once loaded; renderScene() falls back until then
+}
+function renderScene() {
+  if (composer) composer.render();
+  else renderer.render(scene, camera);
+}
+
+const COLORMAP_IDX = { none: 0, viridis: 1, inferno: 2, magma: 3, turbo: 4 };
+// Push CONFIG.palette + exposure into every material/uniform. Idempotent — the single
+// place colours live, so panel edits (and preset swaps) have no hidden couplings.
+function applyPalette() {
+  const p = CONFIG.palette, ex = CONFIG.render.exposure;
+  bgColor.set(p.background);
+  scene.fog.color.set(p.background);
+  scene.fog.density = p.fog;
+  wireMat.color.set(p.wire).multiplyScalar(ex);
+  wireMat.opacity = p.wireOpacity;
+  nodeMat.uniforms.uBase.value.set(p.nodeBase);
+  nodeMat.uniforms.uHot.value.set(p.nodeHot);
+  nodeMat.uniforms.uColormap.value = COLORMAP_IDX[p.colormap] || 0;
+  nodeMat.uniforms.uExposure.value = ex;
+  nodeMat.uniforms.uFogDensity.value = p.fog;
+  if (dust) { dust.material.color.set(p.dust).multiplyScalar(ex); dust.material.opacity = p.dustOpacity; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sparkles — fake BMU activations. Respawn the oldest on the folding front.
+// ─────────────────────────────────────────────────────────────────────────────
+// Sparkle ages run on the pause-aware `clock` (seconds), not wall time, so a pause
+// truly freezes the activations. `birth` is stored in clock-seconds; life is ms.
+let sparkles = [];
+function initSparkles(clock) {
+  sparkles = [];
+  const lifeS = CONFIG.sparkles.life / 1000;
+  for (let k = 0; k < CONFIG.sparkles.count; k++) {
+    sparkles.push({ u: (Math.random() * COLS) | 0, v: (Math.random() * ROWS) | 0,
+                    // stagger births so they don't all pulse in unison
+                    birth: clock - (k / CONFIG.sparkles.count) * lifeS });
+  }
+}
+function envelope(x, attack) {
+  if (x <= 0 || x >= 1) return 0;
+  if (x < attack) return x / attack;              // fast attack
+  const dd = (x - attack) / (1 - attack);
+  return (1 - dd) * (1 - dd);                      // slow quadratic decay
+}
+function spawnSparkle(clock) {
+  if (sparkles.length === 0) return;               // count = 0 disables the layer
+  const fb = CONFIG.sparkles.frontBias;
+  let total = 0;
+  for (let i = 0; i < N; i++) {
+    const s = sArr[i];
+    const front = 4 * s * (1 - s);                 // peaks at s = 0.5 (mid-transition)
+    const w = (1 - fb) + fb * front;
+    weights[i] = w; total += w;
+  }
+  let idx;
+  if (total > 0) {                                 // weighted pick toward the folding front
+    let r = Math.random() * total;
+    for (idx = 0; idx < N; idx++) { r -= weights[idx]; if (r <= 0) break; }
+    if (idx >= N) idx = N - 1;
+  } else {                                         // degenerate (frontBias=1 on a flat/folded sheet)
+    idx = (Math.random() * N) | 0;                 // fall back to a uniform pick, not the corner
+  }
+  let oldest = sparkles[0];
+  for (const s of sparkles) if (s.birth < oldest.birth) oldest = s;
+  oldest.u = idx % COLS; oldest.v = (idx / COLS) | 0; oldest.birth = clock;
+}
+function updateBrightness(clock, gp) {
+  const sp = CONFIG.sparkles;
+  const lifeS = sp.life / 1000;
+  const sigma = sp.radiusStart + (sp.radiusEnd - sp.radiusStart) * gp; // shrinking σ = the SOM tell
+  const inv2s2 = 1 / (2 * sigma * sigma);
+  for (const s of sparkles) s.env = envelope((clock - s.birth) / lifeS, sp.attack);
+  for (let i = 0; i < N; i++) {
+    const u = i % COLS, v = (i / COLS) | 0;
+    let b = 0;
+    for (const s of sparkles) {
+      if (s.env <= 0) continue;
+      const du = u - s.u, dv = v - s.v;
+      b += s.env * Math.exp(-(du * du + dv * dv) * inv2s2);
+    }
+    const decayed = bright[i] * sp.trailDecay;     // persist a decaying trail (spec: max of the two)
+    bright[i] = b > decayed ? b : decayed;         // size is clamped in-shader; color clamps too
+  }
+  brightAttr.needsUpdate = true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mouse interaction state: click ripples (damped expanding waves) + cursor light +
+// pointer parallax. All run on the pause-aware `clock`.
+// ─────────────────────────────────────────────────────────────────────────────
+const RIPPLE_LIFE = 2.5, RIPPLE_TAU = 0.7, RIPPLE_W = 2.5;   // seconds, seconds, grid units
+let ripples = [];                            // { u, v, birth } in clock-seconds
+let cursorGlow = 0;                          // eased strength driving the node shader
+let pointerInside = false, tpx = 0, tpy = 0, mpx = 0, mpy = 0;  // parallax: targets + eased
+const _projV = new THREE.Vector3();
+function nearestVertex(ndcx, ndcy) {         // screen-project verts, return nearest to cursor
+  let best = -1, bd = 1e9;
+  for (let i = 0; i < N; i++) {
+    const i3 = i * 3;
+    _projV.set(positions[i3], positions[i3 + 1], positions[i3 + 2]).project(camera);
+    if (_projV.z > 1) continue;              // behind far plane / camera
+    const dx = _projV.x - ndcx, dy = _projV.y - ndcy, d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-frame position update: interpolate flat→target with staggered eased s,
+// then displace along the interpolated surface normal (fabric, not jelly).
+// ─────────────────────────────────────────────────────────────────────────────
+function updatePositions(t, elapsed, gp) {
+  const m = CONFIG.morph;
+  const denom = Math.max(1e-3, 1 - m.staggerSpread);
+  const invDur = 1 / m.duration;
+
+  const bl = CONFIG.shape.blend;                     // live A↔B morph, no rebuild
+  for (let v = 0; v < ROWS; v++) {
+    for (let u = 0; u < COLS; u++) {
+      const i = v * COLS + u, i3 = i * 3;
+      let raw = (t * invDur - dArr[i] * m.staggerSpread) / denom;
+      raw = raw < 0 ? 0 : (raw > 1 ? 1 : raw);
+      const s = ease(raw);                           // may exceed 1 (overshoot)
+      sArr[i] = s < 0 ? 0 : (s > 1 ? 1 : s);         // clamped copy for spawn bias
+      // effective target = mix(A, B, blend); then fold flat → that target
+      const gx = target[i3]     + (targetB[i3]     - target[i3])     * bl;
+      const gy = target[i3 + 1] + (targetB[i3 + 1] - target[i3 + 1]) * bl;
+      const gz = target[i3 + 2] + (targetB[i3 + 2] - target[i3 + 2]) * bl;
+      basePos[i3]     = flat[i3]     + (gx - flat[i3])     * s;
+      basePos[i3 + 1] = flat[i3 + 1] + (gy - flat[i3 + 1]) * s;
+      basePos[i3 + 2] = flat[i3 + 2] + (gz - flat[i3 + 2]) * s;
+    }
+  }
+
+  const w = CONFIG.wobble;
+  const wAmp = w.amp * Math.pow(1 - gp, w.decay);
+
+  // Gather live click ripples (expanding damped rings), pruning expired ones.
+  const rip = CONFIG.mouse.ripple;
+  let active = null;
+  if (rip > 1e-5 && ripples.length) {
+    active = [];
+    for (const r of ripples) {
+      const age = elapsed - r.birth;
+      if (age >= 0 && age < RIPPLE_LIFE)
+        active.push({ u: r.u, v: r.v, front: age * CONFIG.mouse.rippleSpeed, fade: Math.exp(-age / RIPPLE_TAU) });
+    }
+    if (!active.length) active = null;
+  }
+
+  if (wAmp < 1e-5 && !active) { positions.set(basePos); posAttr.needsUpdate = true; return; }
+
+  const wt = elapsed * w.freq;
+  const rW2 = 2 * RIPPLE_W * RIPPLE_W;
+  for (let v = 0; v < ROWS; v++) {
+    for (let u = 0; u < COLS; u++) {
+      const i = v * COLS + u, i3 = i * 3;
+      const uL = u > 0 ? u - 1 : u, uR = u < COLS - 1 ? u + 1 : u;
+      const vD = v > 0 ? v - 1 : v, vU = v < ROWS - 1 ? v + 1 : v;
+      const iuL = (v * COLS + uL) * 3, iuR = (v * COLS + uR) * 3;
+      const ivD = (vD * COLS + u) * 3, ivU = (vU * COLS + u) * 3;
+      // tangents from grid neighbors of the interpolated surface
+      const tux = basePos[iuR]     - basePos[iuL];
+      const tuy = basePos[iuR + 1] - basePos[iuL + 1];
+      const tuz = basePos[iuR + 2] - basePos[iuL + 2];
+      const tvx = basePos[ivU]     - basePos[ivD];
+      const tvy = basePos[ivU + 1] - basePos[ivD + 1];
+      const tvz = basePos[ivU + 2] - basePos[ivD + 2];
+      let nx = tuy * tvz - tuz * tvy;
+      let ny = tuz * tvx - tux * tvz;
+      let nz = tux * tvy - tuy * tvx;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      let amt = wAmp * Math.sin(wt + phaseArr[i]);        // ambient wobble
+      if (active) {                                       // + expanding click rings
+        for (let k = 0; k < active.length; k++) {
+          const r = active[k];
+          const du = u - r.u, dv = v - r.v;
+          const gd = Math.sqrt(du * du + dv * dv) - r.front;
+          amt += rip * Math.exp(-(gd * gd) / rW2) * r.fade;
+        }
+      }
+      const disp = amt / nl;
+      positions[i3]     = basePos[i3]     + nx * disp;
+      positions[i3 + 1] = basePos[i3 + 1] + ny * disp;
+      positions[i3 + 2] = basePos[i3 + 2] + nz * disp;
+    }
+  }
+  posAttr.needsUpdate = true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timeline state machine: fold → hold → (reverse | restart | nextTarget).
+// ─────────────────────────────────────────────────────────────────────────────
+let phase = 'fold';      // 'fold' | 'hold' | 'unfold' | 'holdFlat'
+let morphT = 0;          // morph time in seconds, 0..duration
+let holdT = 0;
+let paused = false;
+let skipMorph = null;    // { start, dur, morphStart } while a manual finished-shape morph runs
+
+function newSeed() {
+  seed = CONFIG.morph.seedPoint ? CONFIG.morph.seedPoint.slice() : [Math.random(), Math.random()];
+  buildStagger();
+}
+function resetTrail() { bright.fill(0); brightAttr.needsUpdate = true; } // no leftover glow on a hard cut
+function switchTarget(name) {
+  if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; }  // manual control cancels a skip morph
+  currentTarget = CONFIG.morph.target = name;
+  buildTarget(name);                 // dust eases to the new shape via updateDust (no rebuild)
+  morphT = 0; phase = 'fold'; holdT = 0;
+  resetTrail();
+  newSeed();
+}
+// Pick a new random shape for the tour, never the same one twice in a row.
+function tourNext() {
+  const others = TARGET_NAMES.filter((n) => n !== CONFIG.morph.target);
+  const next = others[(Math.random() * others.length) | 0];
+  CONFIG.morph.target = currentTarget = next;
+  buildTarget(next); resetTrail();
+  if (pane) pane.refresh();          // keep the panel's shape-A dropdown in sync
+}
+// Manual "force next shape" (top-left corner): end on the FINISHED next shape. Over the skip
+// window, morphT eases up to full fold (from wherever it was — no teleport) while the current
+// shape blends into the next; then it bakes B→A. Ignores re-clicks while a morph runs.
+function skipToNext() {
+  if (skipMorph) return;             // re-entrancy guard: don't restart a morph in flight
+  const others = TARGET_NAMES.filter((n) => n !== CONFIG.morph.target);
+  const next = others[(Math.random() * others.length) | 0];
+  if (reduce) {                      // static path: swap straight to the finished shape
+    CONFIG.morph.target = currentTarget = next; buildTarget(next); CONFIG.shape.blend = 0;
+    morphT = CONFIG.morph.duration; phase = 'hold'; holdT = 0;
+    updateDust(1); if (pane) pane.refresh(); renderReducedStatic(); return;
+  }
+  CONFIG.shape.targetB = next; buildTargetB(next); CONFIG.shape.blend = 0;
+  skipMorph = { start: clock, dur: 1.6, morphStart: morphT };   // fold up from wherever we are
+  phase = 'hold'; holdT = 0;
+  if (pane) pane.refresh();
+}
+function updateSkip() {
+  const t = Math.min(1, (clock - skipMorph.start) / skipMorph.dur);
+  const e = t * t * (3 - 2 * t);                       // smoothstep
+  morphT = skipMorph.morphStart + (CONFIG.morph.duration - skipMorph.morphStart) * e; // fold up
+  if (t >= 1) {                      // bake B → A, clear the blend, resume the tour from hold
+    CONFIG.shape.blend = 0;
+    CONFIG.morph.target = currentTarget = CONFIG.shape.targetB;
+    buildTarget(CONFIG.morph.target);
+    morphT = CONFIG.morph.duration; phase = 'hold'; holdT = 0;
+    skipMorph = null;
+    if (pane) pane.refresh();
+  } else {
+    CONFIG.shape.blend = e;                            // morph A → B as it folds up
+  }
+}
+function advanceTimeline(dt) {
+  const m = CONFIG.morph;
+  if (phase === 'fold') {
+    morphT += dt;
+    if (morphT >= m.duration) { morphT = m.duration; phase = 'hold'; holdT = 0; }
+  } else if (phase === 'hold') {
+    holdT += dt;
+    if (holdT >= m.holdFolded) {
+      if (m.loopMode === 'reverse' || m.loopMode === 'tour') { phase = 'unfold'; }
+      else if (m.loopMode === 'nextTarget') {
+        const ni = (TARGET_NAMES.indexOf(currentTarget) + 1) % TARGET_NAMES.length;
+        switchTarget(TARGET_NAMES[ni]);
+      } else { morphT = 0; phase = 'fold'; resetTrail(); newSeed(); } // restart
+    }
+  } else if (phase === 'unfold') {
+    morphT -= dt;
+    if (morphT <= 0) { morphT = 0; phase = 'holdFlat'; holdT = 0; }
+  } else if (phase === 'holdFlat') {                 // rest at flat (the "flat space" beat)
+    holdT += dt;
+    if (holdT >= m.holdFlat) {
+      if (m.loopMode === 'tour') tourNext();          // → next shape (tour); reverse refolds same
+      newSeed(); phase = 'fold';
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Camera: slow orbit with a gentle bob and a dolly-in across the run.
+// ─────────────────────────────────────────────────────────────────────────────
+const BOB_FREQ = 0.6;   // fixed, independent of orbitSpeed
+function updateCamera(clock, gp) {
+  const c = CONFIG.camera;
+  const ang = clock * c.orbitSpeed;
+  const R = c.distance * (1 - c.driftIn * gp);
+  // orbitSpeed = 0 → fully static (both orbit angle and bob freeze); driftIn is separate.
+  const bob = c.orbitSpeed > 0 ? Math.sin(clock * BOB_FREQ) * c.orbitTiltAmp : 0;
+  camera.position.set(Math.sin(ang) * R, (0.55 + bob) * R * 0.5, Math.cos(ang) * R);
+  const pxl = CONFIG.mouse.parallax;                 // gentle pointer parallax
+  if (pxl > 0) { camera.position.x += mpx * pxl * 0.5; camera.position.y += mpy * pxl * 0.5; }
+  camera.lookAt(0, 0, 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Debug HUD (`h`). Cockpit: fps, progress, target, seed.
+// ─────────────────────────────────────────────────────────────────────────────
+const hud = document.getElementById('hud');
+let hudOn = false, fps = 0;
+function updateHud(gp) {
+  if (!hudOn) return;
+  hud.textContent =
+    `fps       ${fps.toFixed(0).padStart(3)}\n` +
+    `progress  ${gp.toFixed(3)}  [${phase}]\n` +
+    `target    ${currentTarget}\n` +
+    `seed      ${seed[0].toFixed(2)}, ${seed[1].toFixed(2)}` +
+    (paused ? '\n[paused]' : '');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init + main loop.
+// ─────────────────────────────────────────────────────────────────────────────
+// Query params are QA-only scaffolding (deterministic frames), inert in normal use.
+const params = new URLSearchParams(location.search);
+const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches || params.has('reduce');
+if (params.has('target') && TARGETS[params.get('target')]) currentTarget = CONFIG.morph.target = params.get('target');
+if (params.has('targetB') && TARGETS[params.get('targetB')]) CONFIG.shape.targetB = params.get('targetB');
+if (params.has('blend')) { const b = parseFloat(params.get('blend')); if (Number.isFinite(b)) CONFIG.shape.blend = Math.min(1, Math.max(0, b)); }
+if (params.has('colormap')) CONFIG.palette.colormap = params.get('colormap');   // QA/dev
+// Guard against empty/malformed ?t= so a bad value can't NaN the whole timeline.
+const _tParsed = params.has('t') ? parseFloat(params.get('t')) : NaN;
+let freezeProgress = Number.isFinite(_tParsed) ? Math.min(1, Math.max(0, _tParsed)) : null;
+const perfOn = params.has('perf');
+
+buildFlat();
+buildNoiseFields();
+buildTarget(currentTarget);
+buildTargetB(CONFIG.shape.targetB);
+buildStagger();
+buildDust();
+applyPalette();
+buildComposer();
+
+// `clock` is a pause-aware seconds counter: everything cosmetic (wobble, camera,
+// sparkle aging/spawn) runs off it, so a pause freezes the whole scene, not just the fold.
+let last = performance.now();
+let clock = 0;
+initSparkles(0);
+let lastSpawn = 0;
+
+function renderReducedStatic() {
+  // Final folded state, static, sparkles off.
+  resetTrail();
+  updatePositions(CONFIG.morph.duration, 0, 1);
+  updateDust(1);                 // no frame loop here — snap dust onto the target
+  updateCamera(0, 1);
+  renderScene();
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;           // clamp hitches
+  fps = fps * 0.9 + (1 / Math.max(dt, 1e-4)) * 0.1;
+
+  if (!paused) clock += dt;           // pause halts all cosmetic motion; freeze does not
+
+  // Tesseract is time-varying: rock the 4-D rotation in a readable range (never edge-on,
+  // which would collapse the nested cubes to a flat slab) so it always reads as a hypercube.
+  tessPhase = Math.sin(clock * CONFIG.shape.tessSpeed) * 0.7;
+  if (!paused) {
+    if (CONFIG.morph.target === 'tesseract') buildTarget('tesseract');
+    // only re-sample B when it actually contributes (blend > 0) — avoids dead work
+    if (CONFIG.shape.targetB === 'tesseract' && CONFIG.shape.blend > 0) buildTargetB('tesseract');
+  }
+
+  if (skipMorph) updateSkip();        // manual finished→finished morph (holds the timeline)
+  if (freezeProgress !== null) morphT = freezeProgress * CONFIG.morph.duration; // QA freeze
+  else if (!paused && !skipMorph) advanceTimeline(dt);
+
+  const gp = Math.min(1, Math.max(0, morphT / CONFIG.morph.duration));
+  const spawnEvery = CONFIG.sparkles.spawnInterval / 1000; // ms → clock-seconds
+
+  const _t0 = perfOn ? performance.now() : 0;   // QA-only: isolate CPU-JS from GPU
+  updatePositions(morphT, clock, gp);
+  if (!paused) {                      // ease dust toward the (blended) target — no jumps
+    // the tesseract target moves every frame; once it's folded, track it tightly so dust
+    // rides the surface instead of trailing behind (still eases during a fold-in / switch).
+    const timeVarying = CONFIG.morph.target === 'tesseract' || CONFIG.shape.targetB === 'tesseract';
+    updateDust(timeVarying && gp > 0.98 && !skipMorph ? 0.5 : 0.05);
+  }
+
+  if (!paused && clock - lastSpawn >= spawnEvery) {
+    spawnSparkle(clock); lastSpawn = clock;
+  }
+  updateBrightness(clock, gp);
+  if (!paused) {                                  // ease pointer-driven light + parallax
+    const glowTarget = pointerInside ? CONFIG.mouse.glow : 0;
+    cursorGlow += (glowTarget - cursorGlow) * 0.12;
+    nodeMat.uniforms.uCursorGlow.value = cursorGlow;
+    nodeMat.uniforms.uCursorR.value = CONFIG.mouse.glowRadius;
+    mpx += (tpx - mpx) * 0.06;
+    mpy += (tpy - mpy) * 0.06;
+  }
+  updateCamera(clock, gp);
+  updateHud(gp);
+  const _t1 = perfOn ? performance.now() : 0;
+
+  renderScene();
+  if (perfOn) {
+    const _t2 = performance.now();
+    const p = (window.__perf ||= { cpu: 0, gpu: 0, n: 0 });
+    p.cpu += _t1 - _t0; p.gpu += _t2 - _t1; p.n++;
+    window.__dbg = { phase, morphT: +morphT.toFixed(2), gp: +gp.toFixed(3), target: currentTarget, seed: seed.slice(),
+                     dust0: dustPos ? [+dustPos[0].toFixed(3), +dustPos[1].toFixed(3), +dustPos[2].toFixed(3)] : null };
+  }
+  document.getElementById('status').textContent = 'running';
+}
+
+try {
+  if (reduce) {
+    renderReducedStatic();
+    document.getElementById('status').textContent = 'running(reduced)';
+  } else {
+    requestAnimationFrame(frame);
+  }
+} catch (err) {
+  document.getElementById('status').textContent = 'ERR: ' + (err && err.message ? err.message : err);
+  throw err;
+}
+window.addEventListener('error', (e) => {
+  document.getElementById('status').textContent = 'ERR: ' + (e.message || 'unknown');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Input: h HUD, space pause, r reseed, 1–7 switch target.
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('keydown', (e) => {
+  switch (e.key) {
+    case 'h': hudOn = !hudOn; hud.classList.toggle('on', hudOn); break;
+    case ' ': paused = !paused; e.preventDefault(); break;
+    case 'r': if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; } morphT = 0; phase = 'fold'; holdT = 0; resetTrail(); newSeed(); break;
+    case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9':
+      switchTarget(TARGET_NAMES[(+e.key) - 1]); break;
+    default: return;
+  }
+  if (reduce) renderReducedStatic();   // static path has no frame loop — repaint on change
+});
+
+function onResize() {
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.render.dprCap));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  nodeMat.uniforms.uDpr.value = renderer.getPixelRatio();
+  nodeMat.uniforms.uAspect.value = window.innerWidth / window.innerHeight;
+  if (composer) { composer.setPixelRatio(renderer.getPixelRatio()); composer.setSize(window.innerWidth, window.innerHeight); }
+  if (reduce) renderReducedStatic();
+}
+window.addEventListener('resize', onResize);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pointer interaction: cursor light (uniform), click ripples, parallax.
+// Disabled under reduced motion (the static path has no frame loop to animate them).
+// ─────────────────────────────────────────────────────────────────────────────
+if (!reduce) {
+  const toNDC = (e) => [(e.clientX / window.innerWidth) * 2 - 1, -((e.clientY / window.innerHeight) * 2 - 1)];
+  const overUI = (e) => !!(e.target.closest && e.target.closest('#gear, #panel, #nextBtn, #aboutBtn, #about'));
+  const leave = () => { pointerInside = false; tpx = 0; tpy = 0; };
+  window.addEventListener('pointermove', (e) => {
+    const [nx, ny] = toNDC(e);
+    nodeMat.uniforms.uCursor.value.set(nx, ny);
+    tpx = nx; tpy = ny; pointerInside = true;
+  });
+  window.addEventListener('pointerdown', (e) => {
+    if (overUI(e)) return;                         // don't ripple when using the gear/panel
+    const [nx, ny] = toNDC(e);
+    nodeMat.uniforms.uCursor.value.set(nx, ny);
+    pointerInside = true;
+    if (CONFIG.mouse.ripple > 0) {
+      const idx = nearestVertex(nx, ny);           // drop the ring where you clicked on the sheet
+      if (idx >= 0) {
+        ripples = ripples.filter((r) => clock - r.birth < RIPPLE_LIFE);
+        ripples.push({ u: idx % COLS, v: (idx / COLS) | 0, birth: clock });
+        if (ripples.length > 8) ripples.shift();
+      }
+    }
+  });
+  window.addEventListener('pointerup', (e) => { if (e.pointerType === 'touch') leave(); });
+  document.addEventListener('pointerleave', leave);
+  window.addEventListener('blur', leave);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings gear + Tweakpane control panel.
+// Gear is invisible by default and eases in with pointer proximity (touch: reveals
+// when the top-right corner is tapped). Tweakpane is loaded lazily on first open and
+// binds directly to CONFIG, so every control is the same tuning surface as the code.
+// ─────────────────────────────────────────────────────────────────────────────
+const gearEl = document.getElementById('gear');
+const panelEl = document.getElementById('panel');
+const aboutBtn = document.getElementById('aboutBtn');
+const aboutEl = document.getElementById('about');
+const nextBtn = document.getElementById('nextBtn');
+const isTouch = window.matchMedia('(hover: none)').matches;
+
+// Named colour schemes for the "scheme" dropdown (each is a full palette).
+const PALETTES = {
+  teal:  { background:'#050807', wire:'#1d4d44', wireOpacity:0.5,  nodeBase:'#2a6b5d', nodeHot:'#ffe9a3', dust:'#8a7a4a', dustOpacity:0.25, fog:0.06 },
+  ice:   { background:'#04070d', wire:'#1e3a55', wireOpacity:0.5,  nodeBase:'#2f6f9e', nodeHot:'#dff2ff', dust:'#5a7a9a', dustOpacity:0.22, fog:0.06 },
+  ember: { background:'#0a0503', wire:'#5a2410', wireOpacity:0.5,  nodeBase:'#8a3a12', nodeHot:'#ffd27f', dust:'#7a4a2a', dustOpacity:0.25, fog:0.07 },
+  mono:  { background:'#060606', wire:'#333333', wireOpacity:0.5,  nodeBase:'#555555', nodeHot:'#ffffff', dust:'#666666', dustOpacity:0.20, fog:0.05 },
+  vapor: { background:'#0a0512', wire:'#3a2a6a', wireOpacity:0.55, nodeBase:'#7a3a9a', nodeHot:'#8affea', dust:'#6a4a8a', dustOpacity:0.25, fog:0.06 },
+};
+function applyScheme(name, refresh) {
+  if (!PALETTES[name]) return;
+  Object.assign(CONFIG.palette, PALETTES[name]);
+  applyPalette();
+  if (refresh && pane) pane.refresh();
+  if (reduce) renderReducedStatic();
+}
+
+// Corner hotspots — each icon eases in with pointer proximity (touch: reveals when its
+// corner is tapped). One shared ticker, works even in reduced-motion/static.
+function smoothstep(e0, e1, x) { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); }
+const easeRate = reduce ? 1 : 0.09;
+let panelOpen = false, aboutOpen = false;
+const hotspots = [];
+function addCorner(el, isOpen) {
+  const hs = { el, isOpen, op: 0, target: 0, revealUntil: 0, anchor: { x: 0, y: 0 } };
+  hs.refresh = () => { const r = el.getBoundingClientRect(); hs.anchor.x = r.left + r.width / 2; hs.anchor.y = r.top + r.height / 2; };
+  hs.refresh();
+  el.addEventListener('pointerenter', () => { hs.target = 1; });
+  hotspots.push(hs);
+}
+addCorner(gearEl, () => panelOpen);
+addCorner(aboutBtn, () => aboutOpen);
+addCorner(nextBtn, () => false);
+window.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch') return;
+  for (const hs of hotspots) hs.target = smoothstep(240, 70, Math.hypot(e.clientX - hs.anchor.x, e.clientY - hs.anchor.y));
+});
+window.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') return;   // touch: reveal whichever corner was tapped near
+  for (const hs of hotspots) if (Math.hypot(e.clientX - hs.anchor.x, e.clientY - hs.anchor.y) < 130) hs.revealUntil = performance.now() + 3500;
+});
+window.addEventListener('resize', () => { for (const hs of hotspots) hs.refresh(); });
+function uiTick() {
+  requestAnimationFrame(uiTick);
+  const nowp = performance.now();
+  for (const hs of hotspots) {
+    const t = hs.isOpen() ? 1 : (isTouch ? (nowp < hs.revealUntil ? 1 : 0) : hs.target);
+    hs.op += (t - hs.op) * easeRate;
+    hs.el.style.opacity = hs.op.toFixed(3);
+    hs.el.style.pointerEvents = hs.op > 0.12 ? 'auto' : 'none';
+  }
+}
+uiTick();
+
+// Lazy Tweakpane build. Fails gracefully (art keeps running) if the CDN is unreachable.
+let pane = null, paneLoading = false;
+async function ensurePanel() {
+  if (pane || paneLoading) return;
+  paneLoading = true;
+  try {
+    const { Pane } = await import('https://esm.sh/tweakpane@4.0.5');
+    pane = new Pane({ container: panelEl, title: 'controls' });
+    buildBindings(pane);
+    pane.on('change', () => { if (reduce) renderReducedStatic(); });   // repaint static view on any edit
+  } catch (err) {
+    panelEl.innerHTML = '<div style="padding:10px;font:12px ui-monospace,monospace;color:#cfeee6">controls unavailable offline</div>';
+  }
+  paneLoading = false;
+}
+async function togglePanel() {
+  panelOpen = !panelOpen;
+  gearEl.classList.toggle('open', panelOpen);
+  if (panelOpen) await ensurePanel();
+  panelEl.classList.toggle('open', panelOpen);
+}
+function toggleAbout() {
+  aboutOpen = !aboutOpen;
+  aboutBtn.classList.toggle('open', aboutOpen);
+  aboutEl.classList.toggle('open', aboutOpen);
+}
+gearEl.addEventListener('click', (e) => { e.stopPropagation(); togglePanel(); });
+aboutBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleAbout(); });
+nextBtn.addEventListener('click', (e) => { e.stopPropagation(); skipToNext(); });
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (panelOpen) togglePanel(); if (aboutOpen) toggleAbout(); } });
+
+const SHAPE_OPTS = { torus: 'torus', 'swiss roll': 'swissRoll', 'sphere band': 'sphereBand', mobius: 'mobius', superformula: 'superformula', harmonic: 'sphericalHarmonic', tesseract: 'tesseract', pyramid: 'pyramid', bipyramid: 'bipyramid' };
+function buildBindings(p) {
+  const rebuildNoise = () => { buildNoiseFields(); buildStagger(); };
+  // Re-sample both blended shapes + dust in place (no fold reset) so exotic-shape
+  // sliders morph the folded surface live.
+  // Re-sample the two shapes; keep the stable dust identity and snap it to the new params
+  // (updateDust(1)) rather than rebuilding — so exotic-shape sliders don't re-scatter the dust.
+  const rebuildShapes = () => { buildTarget(CONFIG.morph.target); buildTargetB(CONFIG.shape.targetB); updateDust(1); };
+  const rnd = (a, b) => a + Math.random() * (b - a);
+
+  const shape = p.addFolder({ title: 'shape', expanded: true });
+  shape.addBinding(CONFIG.morph, 'target', { options: SHAPE_OPTS, label: 'shape A' }).on('change', (ev) => switchTarget(ev.value));
+  shape.addBinding(CONFIG.shape, 'targetB', { options: SHAPE_OPTS, label: 'shape B' }).on('change', () => buildTargetB(CONFIG.shape.targetB));
+  shape.addBinding(CONFIG.shape, 'blend', { min: 0, max: 1, step: 0.01, label: 'A → B' });
+  const sf = shape.addFolder({ title: 'superformula', expanded: false });
+  sf.addBinding(CONFIG.shape, 'sfM',  { min: 1, max: 20, step: 1, label: 'm (symmetry)' }).on('change', rebuildShapes);
+  sf.addBinding(CONFIG.shape, 'sfN1', { min: 0.1, max: 6, step: 0.05 }).on('change', rebuildShapes);
+  sf.addBinding(CONFIG.shape, 'sfN2', { min: 0.1, max: 6, step: 0.05 }).on('change', rebuildShapes);
+  sf.addBinding(CONFIG.shape, 'sfN3', { min: 0.1, max: 6, step: 0.05 }).on('change', rebuildShapes);
+  sf.addBinding(CONFIG.shape, 'sfM2', { min: 1, max: 20, step: 1, label: 'm2' }).on('change', rebuildShapes);
+  const sh = shape.addFolder({ title: 'harmonics', expanded: false });
+  ['shM0', 'shM1', 'shM2', 'shM3', 'shM4', 'shM5', 'shM6', 'shM7'].forEach((k) =>
+    sh.addBinding(CONFIG.shape, k, { min: 0, max: 8, step: 1 }).on('change', rebuildShapes));
+  shape.addBinding(CONFIG.shape, 'tessSpeed', { min: 0, max: 2, step: 0.05, label: 'tesseract spin' });
+
+  const morph = p.addFolder({ title: 'morph', expanded: false });
+  morph.addBinding(CONFIG.morph, 'loopMode', { options: { 'tour (all shapes)': 'tour', reverse: 'reverse', restart: 'restart', 'next target': 'nextTarget' } });
+  morph.addBinding(CONFIG.morph, 'duration', { min: 3, max: 40, step: 0.5 });
+  morph.addBinding(CONFIG.morph, 'holdFolded', { min: 0, max: 12, step: 0.5 });
+  morph.addBinding(CONFIG.morph, 'holdFlat', { min: 0, max: 6, step: 0.2 });
+  morph.addBinding(CONFIG.morph, 'staggerSpread', { min: 0, max: 0.9, step: 0.01 });
+  morph.addBinding(CONFIG.morph, 'staggerNoiseMix', { min: 0, max: 1, step: 0.01 });
+  morph.addBinding(CONFIG.morph, 'staggerNoiseScale', { min: 0.5, max: 8, step: 0.1 }).on('change', rebuildNoise);
+  morph.addBinding(CONFIG.morph, 'overshootAmp', { min: 0, max: 0.3, step: 0.005 });
+  morph.addBinding(CONFIG.morph, 'overshootFreq', { min: 0, max: 8, step: 0.1 });
+  morph.addBinding(CONFIG.morph, 'overshootDecay', { min: 0.5, max: 6, step: 0.1 });
+
+  const sp = p.addFolder({ title: 'sparkles', expanded: true });
+  sp.addBinding(CONFIG.sparkles, 'count', { min: 0, max: 20, step: 1 }).on('change', () => { initSparkles(clock); resetTrail(); });
+  sp.addBinding(CONFIG.sparkles, 'spawnInterval', { min: 80, max: 1500, step: 10 });
+  sp.addBinding(CONFIG.sparkles, 'radiusStart', { min: 1, max: 16, step: 0.5 });
+  sp.addBinding(CONFIG.sparkles, 'radiusEnd', { min: 0.5, max: 8, step: 0.1 });
+  sp.addBinding(CONFIG.sparkles, 'life', { min: 400, max: 4000, step: 50 });
+  sp.addBinding(CONFIG.sparkles, 'attack', { min: 0.02, max: 0.6, step: 0.01 });
+  sp.addBinding(CONFIG.sparkles, 'trailDecay', { min: 0.7, max: 0.98, step: 0.005 });
+  sp.addBinding(CONFIG.sparkles, 'sizeBoost', { min: 0, max: 6, step: 0.1 });
+  sp.addBinding(CONFIG.sparkles, 'frontBias', { min: 0, max: 1, step: 0.05 });
+
+  const col = p.addFolder({ title: 'colour', expanded: true });
+  const ui = { scheme: 'teal' };
+  col.addBinding(ui, 'scheme', { options: { teal: 'teal', ice: 'ice', ember: 'ember', mono: 'mono', vapor: 'vapor' } })
+     .on('change', (ev) => applyScheme(ev.value, true));
+  col.addBinding(CONFIG.palette, 'colormap', { options: { none: 'none', viridis: 'viridis', inferno: 'inferno', magma: 'magma', turbo: 'turbo' }, label: 'node colormap' })
+     .on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'background', { view: 'color' }).on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'wire', { view: 'color' }).on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'nodeBase', { view: 'color' }).on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'nodeHot', { view: 'color' }).on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'dust', { view: 'color' }).on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'wireOpacity', { min: 0, max: 1, step: 0.02 }).on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'dustOpacity', { min: 0, max: 1, step: 0.02 }).on('change', applyPalette);
+  col.addBinding(CONFIG.palette, 'fog', { min: 0, max: 0.2, step: 0.005 }).on('change', applyPalette);
+  col.addBinding(CONFIG.render, 'exposure', { min: 0.3, max: 2.5, step: 0.05 }).on('change', applyPalette);
+  col.addBinding(CONFIG.render, 'bloom').on('change', () => buildComposer());
+
+  const wob = p.addFolder({ title: 'wobble', expanded: false });
+  wob.addBinding(CONFIG.wobble, 'amp', { min: 0, max: 0.12, step: 0.002 });
+  wob.addBinding(CONFIG.wobble, 'freq', { min: 0, max: 6, step: 0.1 });
+  wob.addBinding(CONFIG.wobble, 'decay', { min: 0, max: 5, step: 0.1 });
+
+  const cam = p.addFolder({ title: 'camera', expanded: false });
+  cam.addBinding(CONFIG.camera, 'fov', { min: 20, max: 90, step: 1 }).on('change', () => { camera.fov = CONFIG.camera.fov; camera.updateProjectionMatrix(); });
+  cam.addBinding(CONFIG.camera, 'distance', { min: 1.5, max: 8, step: 0.1 });
+  cam.addBinding(CONFIG.camera, 'orbitSpeed', { min: 0, max: 0.4, step: 0.005 });
+  cam.addBinding(CONFIG.camera, 'orbitTiltAmp', { min: 0, max: 0.5, step: 0.01 });
+  cam.addBinding(CONFIG.camera, 'driftIn', { min: 0, max: 0.6, step: 0.01 });
+
+  const mouse = p.addFolder({ title: 'mouse', expanded: false });
+  mouse.addBinding(CONFIG.mouse, 'glow', { min: 0, max: 2, step: 0.05, label: 'cursor light' });
+  mouse.addBinding(CONFIG.mouse, 'glowRadius', { min: 0.03, max: 0.5, step: 0.01, label: 'light radius' });
+  mouse.addBinding(CONFIG.mouse, 'ripple', { min: 0, max: 0.15, step: 0.005, label: 'click ripple' });
+  mouse.addBinding(CONFIG.mouse, 'rippleSpeed', { min: 2, max: 40, step: 1, label: 'ripple speed' });
+  mouse.addBinding(CONFIG.mouse, 'parallax', { min: 0, max: 0.5, step: 0.01 });
+
+  p.addButton({ title: 'reseed' }).on('click', () => {
+    if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; }   // cancel an in-flight skip morph
+    seed[0] = Math.random(); seed[1] = Math.random(); buildStagger();
+    morphT = 0; phase = 'fold'; holdT = 0; resetTrail();
+    if (reduce) renderReducedStatic();
+  });
+  p.addButton({ title: 'surprise me' }).on('click', () => {
+    CONFIG.morph.target = TARGET_NAMES[(Math.random() * TARGET_NAMES.length) | 0];
+    CONFIG.morph.staggerSpread = +rnd(0.2, 0.85).toFixed(2);
+    CONFIG.morph.staggerNoiseMix = +rnd(0, 0.8).toFixed(2);
+    CONFIG.morph.overshootAmp = +rnd(0, 0.16).toFixed(3);
+    CONFIG.sparkles.count = 3 + (Math.random() * 10 | 0);
+    CONFIG.sparkles.radiusStart = +rnd(4, 12).toFixed(1);
+    CONFIG.sparkles.frontBias = +rnd(0.3, 1).toFixed(2);
+    CONFIG.wobble.amp = +rnd(0, 0.06).toFixed(3);
+    CONFIG.shape.targetB = TARGET_NAMES[(Math.random() * TARGET_NAMES.length) | 0];
+    CONFIG.shape.blend = +rnd(0, 0.55).toFixed(2);
+    CONFIG.shape.sfM = 2 + (Math.random() * 14 | 0);
+    CONFIG.shape.sfN1 = +rnd(0.2, 2).toFixed(2);
+    const names = Object.keys(PALETTES);
+    Object.assign(CONFIG.palette, PALETTES[names[(Math.random() * names.length) | 0]]);
+    CONFIG.palette.colormap = Math.random() < 0.5 ? 'none' : ['viridis', 'inferno', 'magma', 'turbo'][(Math.random() * 4) | 0];
+    switchTarget(CONFIG.morph.target);          // rebuilds target A, resets fold (dust eases)
+    buildTargetB(CONFIG.shape.targetB);
+    initSparkles(clock); resetTrail(); rebuildNoise(); applyPalette();
+    pane.refresh();
+    if (reduce) renderReducedStatic();
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cache-bust version indicator. The <meta name="cb"> token (bumped by scripts/bust.sh)
+// decodes to 3 shape glyphs + a favicon via the cache-busting skill's byte→cell map
+// (cell = byte mod 64 → row = colour band, col = shape). Change the build → glyphs +
+// tab icon change; reload and see the same glyphs → your cache is stale upstream.
+// ─────────────────────────────────────────────────────────────────────────────
+(function renderBuild() {
+  const CB_COLORS = ['#0080FF', '#4CC4FF', '#99EEFF', '#CCFFFF', '#FFFFCC', '#FFEE99', '#FFC44C', '#FF8000'];
+  const CB_SHAPES = [
+    '<rect x="16" y="16" width="96" height="96" fill="currentColor"/>',
+    '<polygon points="64,16 112,112 16,112" fill="currentColor"/>',
+    '<circle cx="64" cy="64" r="48" fill="currentColor"/>',
+    '<rect x="16" y="16" width="96" height="40" fill="currentColor"/><rect x="16" y="72" width="96" height="40" fill="currentColor"/>',
+    '<rect x="20" y="20" width="88" height="32" fill="none" stroke="currentColor" stroke-width="8"/><rect x="20" y="76" width="88" height="32" fill="none" stroke="currentColor" stroke-width="8"/>',
+    '<polygon points="64,20 108,108 20,108" fill="none" stroke="currentColor" stroke-width="8"/>',
+    '<circle cx="64" cy="64" r="44" fill="none" stroke="currentColor" stroke-width="8"/>',
+    '<rect x="20" y="20" width="88" height="88" fill="none" stroke="currentColor" stroke-width="8"/>',
+  ];
+  const cell = (byte) => { const c = ((byte % 64) + 64) % 64; return { color: CB_COLORS[(c / 8) | 0], shape: CB_SHAPES[c % 8] }; };
+  const meta = document.querySelector('meta[name="cb"]');
+  const token = ((meta && meta.content) || '00000000').trim();
+  const bytes = [0, 2, 4].map((i) => parseInt(token.substr(i, 2), 16) || 0);
+
+  const glyphs = document.getElementById('cbglyphs');
+  if (glyphs) glyphs.innerHTML = bytes.map((b) => {
+    const k = cell(b);
+    return `<svg viewBox="0 0 128 128" style="color:${k.color};background:#111">${k.shape}</svg>`;
+  }).join('');
+  const tok = document.getElementById('cbtoken');
+  if (tok) tok.textContent = token;
+
+  const fav = document.getElementById('cbfav');           // favicon from the leading byte
+  if (fav) {
+    const k = cell(bytes[0]);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" fill="#111"/><g color="${k.color}">${k.shape}</g></svg>`;
+    fav.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
+  }
+  const ver = document.getElementById('cbver');           // click to copy the token
+  if (ver) ver.addEventListener('click', () => { try { navigator.clipboard.writeText(token); } catch (e) {} });
+})();
+</script>
