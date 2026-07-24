@@ -881,6 +881,7 @@ function refreshTetrisColors() {   // 7 stations along the active ramp; piece ty
   if (window.__tetris) window.__tetris.dirty = true;
 }
 
+let tetrisMode = 'off';        // 'off' | 'auto' (zero-player) | 'play' (WASD / swipes)
 let tetrisMesh = null, tetrisPosArr = null, tetrisColArr = null;
 const _tpv = [0, 0, 0], _tnv = [0, 0, 0];
 
@@ -1632,7 +1633,7 @@ function frame(now) {
 
   const _t0 = perfOn ? performance.now() : 0;   // QA-only: isolate CPU-JS from GPU
   updatePositions(morphT, clock, gp);
-  if (experiments.tetris.on) {                  // experiment rides the fresh positions
+  if (tetrisMode !== 'off') {                   // experiment rides the fresh positions
     if (!paused) tetris.step(clock);
     updateTetrisFrame(clock, paused ? 0 : dt);
   }
@@ -1791,9 +1792,12 @@ addCorner(aboutBtn, () => aboutOpen);
 addCorner(nextBtn, () => false);
 
 // Experiments registry — the bottom-left flask opens this menu. Each entry's
-// toggle(on) is installed by its own layer (tetris wires the real one below);
+// toggle(on) is installed by its own layer (tetris wires them below);
 // future experiments just add a row here.
-const experiments = { tetris: { label: 'tetris', on: false, toggle() {} } };
+const experiments = {
+  tetrisAuto: { label: 'tetris auto', on: false, toggle() {} },
+  tetrisPlay: { label: 'tetris play', on: false, toggle() {} },
+};
 const expBtn = document.getElementById('exp');
 const expMenu = document.getElementById('expMenu');
 let expOpen = false;
@@ -1818,21 +1822,34 @@ window.addEventListener('pointerdown', (e) => {
   if (expOpen && !(e.target.closest && e.target.closest('#exp, #expMenu'))) setExpOpen(false);
 });
 addCorner(expBtn, () => expOpen);
-experiments.tetris.toggle = (on) => {
+// Auto and Play are two faces of one layer: mutually exclusive rows, and the
+// board CARRIES OVER on a mode switch (one continuous game — only the policy
+// changes hands). Fresh enable from fully-off starts clean.
+function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
+  const wasOff = tetrisMode === 'off';
+  tetrisMode = mode;
+  experiments.tetrisAuto.on = mode === 'auto';
+  experiments.tetrisPlay.on = mode === 'play';
+  if (expOpen) renderExpMenu();                // reflect the exclusive switch live
+  const on = mode !== 'off';
   if (on && !tetrisMesh) { initTetrisMesh(); if (!reduce) initTetrisParticles(); }  // lazy
   if (tetrisMesh) tetrisMesh.visible = on;
   if (tetrisParticles) tetrisParticles.visible = on;
-  if (on) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
-  if (reduce) {                                // static path: draw one settled mid-game frame
-    if (on) {
+  tetris.controlled = mode === 'play';
+  if (on && wasOff) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
+  if (reduce) {                                // static path: draw one settled frame
+    if (on && wasOff && mode === 'auto') {
       // No frame loop, so fast-forward with synthetic 1s ticks: a few pieces
-      // fall, lock and stack, then render that state once.
+      // fall, lock and stack, then render that state once. (Play mode starts
+      // clean and moves only on player input.)
       for (let i = 1; i <= 60; i++) tetris.step(clock + i);
-      updateTetrisFrame(clock + 61, 0);
     }
+    if (on) updateTetrisFrame(clock + 61, 0);
     renderReducedStatic();
   }
-};
+}
+experiments.tetrisAuto.toggle = (on) => setTetrisMode(on ? 'auto' : 'off');
+experiments.tetrisPlay.toggle = (on) => setTetrisMode(on ? 'play' : 'off');
 window.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') return;
   for (const hs of hotspots) hs.target = smoothstep(240, 70, Math.hypot(e.clientX - hs.anchor.x, e.clientY - hs.anchor.y));
