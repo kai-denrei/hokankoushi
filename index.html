@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="1cab0274">
+<meta name="cb" content="a6523910">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -354,6 +354,8 @@ const CONFIG = {
     playFlatTilt: 0.45,    // play mode: sheet lean toward the viewer during the flat beat (rad)
     playTimeScale: 2.0,    // play mode: fold/unfold speed multiplier (shapes pass faster)
     holdFoldedS: 2,        // play mode: seconds at full fold (ambient uses morph.holdFolded)
+    trackStrength: 0.85,   // play mode: how hard the camera homes to the board (0 = free orbit)
+    lookAtBias: 0.25,      // play mode: lerp of camera target toward the board centroid
   },
 };
 
@@ -574,12 +576,18 @@ function buildNoiseFields() {
 // bounding sphere so every shape (and any blend of two) frames identically.
 function sampleShape(name, arr) {
   const fn = TARGETS[name] || TARGETS.torus;
+  // Play-mode re-anchoring: fractional phase shifts so the board patch lands on
+  // the shape's visible face (torus: +0.5 v moves it from the inner throat to
+  // the outer equator — seamless, the torus is closed in v).
+  const off = tetrisMode === 'play' ? TETRIS_PLAY_PHASE[name] : null;
   const out = [0, 0, 0];
   let cx = 0, cy = 0, cz = 0;
   for (let v = 0; v < ROWS; v++) {
     for (let u = 0; u < COLS; u++) {
       const i3 = (v * COLS + u) * 3;
-      fn(u / (COLS - 1), v / (ROWS - 1), out);
+      const uu = off ? (u / (COLS - 1) + off.du) % 1 : u / (COLS - 1);
+      const vv = off ? (v / (ROWS - 1) + off.dv) % 1 : v / (ROWS - 1);
+      fn(uu, vv, out);
       let x = out[0], y = out[1], z = out[2];
       if (!(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))) x = y = z = 0;
       arr[i3] = x; arr[i3 + 1] = y; arr[i3 + 2] = z;
@@ -905,10 +913,34 @@ let tetrisMesh = null, tetrisPosArr = null, tetrisColArr = null;
 // the flat sheet turns toward the player like a board on a stand, then hands
 // back to the ambient orbit as the next fold starts. No snaps either way.
 let tetrisStageW = 0, tetrisBuiltTilt = null;
+// Board-tracking: the play camera homes toward the board's live position so the
+// key area rides near screen center instead of drifting behind the shape.
+let tetrisTrackW = 0;
+const tetrisBoardC = [0, 0, 0], tetrisBoardN = [0, 0, 1];
+function updateTetrisBoardFrame() {          // centroid + mean normal of the board patch
+  let cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
+  for (const pv of [2, 10, 18]) {
+    for (const pu of [1, 5, 9]) {
+      patchPointInto(_tpv, pu, pv);
+      patchNormalInto(_tnv, BU0 + pu, BV0 + pv);
+      cx += _tpv[0]; cy += _tpv[1]; cz += _tpv[2];
+      nx += _tnv[0]; ny += _tnv[1]; nz += _tnv[2];
+    }
+  }
+  tetrisBoardC[0] = cx / 9; tetrisBoardC[1] = cy / 9; tetrisBoardC[2] = cz / 9;
+  const nl = Math.hypot(nx, ny, nz) || 1;
+  // flip the mean normal to agree with the centroid direction, so inward-oriented
+  // parameterizations can't cancel the bearing
+  const s = (nx * cx + ny * cy + nz * cz) < 0 ? -1 : 1;
+  tetrisBoardN[0] = s * nx / nl; tetrisBoardN[1] = s * ny / nl; tetrisBoardN[2] = s * nz / nl;
+}
 function updateTetrisStage() {
   const target = (tetrisMode === 'play' && phase === 'holdFlat') ? 1 : 0;
   tetrisStageW += (target - tetrisStageW) * 0.05;
   if (target === 0 && tetrisStageW < 1e-3) tetrisStageW = 0;
+  const trackTarget = (tetrisMode === 'play' && phase !== 'holdFlat') ? CONFIG.tetris.trackStrength : 0;
+  tetrisTrackW += (trackTarget - tetrisTrackW) * 0.04;
+  if (trackTarget === 0 && tetrisTrackW < 1e-3) tetrisTrackW = 0;
   const base = CONFIG.lattice.flatTilt;
   if (tetrisBuiltTilt === null) tetrisBuiltTilt = base;
   const want = base + (CONFIG.tetris.playFlatTilt - base) * tetrisStageW;
@@ -1225,6 +1257,7 @@ function updateScoreFrame() {
 let tetrisPrevState = 'falling';
 function updateTetrisFrame(clock, dt) {
   if (!tetrisMesh) return;
+  updateTetrisBoardFrame();                  // live centroid/normal for the tracking camera
   if (tetris.state === 'clearing' && tetrisPrevState !== 'clearing') spawnClearBurst();
   tetrisPrevState = tetris.state;
   // Positions every frame — the sheet moves under the board.
@@ -1591,6 +1624,8 @@ const tetris = {
 };
 window.__tetris = tetris;    // QA hook (headless harness + Playwright)
 window.__tetrisHi = () => tetrisHighScore;   // QA: session high score readout
+window.__camAng = () => Math.atan2(camera.position.x, camera.position.z);   // QA: camera bearing
+window.__boardBearing = () => Math.atan2(tetrisBoardC[0] + tetrisBoardN[0], tetrisBoardC[2] + tetrisBoardN[2]);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Timeline state machine: fold → hold → (reverse | restart | nextTarget).
@@ -1618,6 +1653,8 @@ function switchTarget(name) {
 // Play mode prunes the shapes that make the board unreadable (crushed, occluded
 // or edge-on). Manual picks (keys 1–9, panel dropdown) stay unrestricted.
 const TETRIS_PLAY_BAN = new Set(['sphericalHarmonic', 'sphereBand', 'swissRoll']);
+const TETRIS_PLAY_PHASE = { torus: { du: 0, dv: 0.5 } };   // see sampleShape
+const TETRIS_PLAY_SHAPE_SPEED = { superformula: 2.5 };     // shapes that flash by in play
 function tourCandidates() {
   return TARGET_NAMES.filter((n) =>
     n !== CONFIG.morph.target && !(tetrisMode === 'play' && TETRIS_PLAY_BAN.has(n)));
@@ -1678,13 +1715,15 @@ function advanceTimeline(dt) {
   // morphT/gp semantics are untouched) and the folded hold is shorter — the
   // readable flat window is where the player gets a fighting chance.
   const play = tetrisMode === 'play';
-  const mdt = play ? dt * CONFIG.tetris.playTimeScale : dt;
+  // Confusing shapes flash by even faster (per-shape boost on top of the play scale).
+  const shapeBoost = play ? (TETRIS_PLAY_SHAPE_SPEED[m.target] || 1) : 1;
+  const mdt = play ? dt * CONFIG.tetris.playTimeScale * shapeBoost : dt;
   if (phase === 'fold') {
     morphT += mdt;
     if (morphT >= m.duration) { morphT = m.duration; phase = 'hold'; holdT = 0; }
   } else if (phase === 'hold') {
     holdT += dt;
-    if (holdT >= (play ? CONFIG.tetris.holdFoldedS : m.holdFolded)) {
+    if (holdT >= (play ? CONFIG.tetris.holdFoldedS / shapeBoost : m.holdFolded)) {
       if (m.loopMode === 'reverse' || m.loopMode === 'tour') { phase = 'unfold'; }
       else if (m.loopMode === 'nextTarget') {
         let ni = TARGET_NAMES.indexOf(currentTarget);
@@ -1720,13 +1759,22 @@ function updateCamera(clock, gp) {
     const wrap = Math.atan2(Math.sin(-ang), Math.cos(-ang));   // shortest arc to ang ≡ 0 (mod 2π)
     angUsed = ang + wrap * tetrisStageW;
   }
+  if (tetrisTrackW > 1e-3) {           // play fold phases: home to the board's bearing
+    const bx = tetrisBoardC[0] + tetrisBoardN[0], bz = tetrisBoardC[2] + tetrisBoardN[2];
+    if (bx * bx + bz * bz > 1e-4) {    // degenerate straight-overhead case: leave the orbit be
+      const thb = Math.atan2(bx, bz);
+      const wrap = Math.atan2(Math.sin(thb - angUsed), Math.cos(thb - angUsed));
+      angUsed += wrap * tetrisTrackW;
+    }
+  }
   const R = c.distance * (1 - c.driftIn * gp);
   // orbitSpeed = 0 → fully static (both orbit angle and bob freeze); driftIn is separate.
   const bob = c.orbitSpeed > 0 ? Math.sin(clock * BOB_FREQ) * c.orbitTiltAmp : 0;
   camera.position.set(Math.sin(angUsed) * R, (0.55 + bob) * R * 0.5, Math.cos(angUsed) * R);
   const pxl = CONFIG.mouse.parallax;                 // gentle pointer parallax
   if (pxl > 0) { camera.position.x += mpx * pxl * 0.5; camera.position.y += mpy * pxl * 0.5; }
-  camera.lookAt(0, 0, 0);
+  const lw = Math.max(tetrisStageW, tetrisTrackW) * CONFIG.tetris.lookAtBias;
+  camera.lookAt(tetrisBoardC[0] * lw, tetrisBoardC[1] * lw, tetrisBoardC[2] * lw);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2064,6 +2112,12 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
   tetris.controlled = mode === 'play';
   if (on && wasOff) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
   if (!on) tetrisHighScore = Math.max(tetrisHighScore, tetris.lines);   // abandoning banks the game
+  // Re-anchoring offsets (TETRIS_PLAY_PHASE) live in the target build; apply or
+  // drop them now only if the sheet is near flat (no folded-state jump), else
+  // they land at the next shape switch.
+  if (morphT < 0.05 * CONFIG.morph.duration) {
+    buildTarget(CONFIG.morph.target); buildTargetB(CONFIG.shape.targetB); updateDust(1);
+  }
   if (on && !scorePatch) initScoreMesh();      // line-clear odometer, lit on the sheet
   if (scorePatch) { scorePatch.mesh.visible = on; scoreDrawn = -1; hiDrawn = -1; if (!on) hiPatch.mesh.visible = false; }
   if (reduce) {                                // static path: draw one settled frame
@@ -2230,6 +2284,8 @@ function buildBindings(p) {
   tet.addBinding(CONFIG.tetris, 'playFlatTilt', { min: 0.15, max: 0.9, step: 0.01, label: 'flat lean' });
   tet.addBinding(CONFIG.tetris, 'playTimeScale', { min: 1, max: 4, step: 0.1, label: 'fold speed ×' });
   tet.addBinding(CONFIG.tetris, 'holdFoldedS', { min: 0, max: 10, step: 0.5, label: 'fold hold s' });
+  tet.addBinding(CONFIG.tetris, 'trackStrength', { min: 0, max: 1, step: 0.05, label: 'board track' });
+  tet.addBinding(CONFIG.tetris, 'lookAtBias', { min: 0, max: 0.6, step: 0.05, label: 'board center' });
 
   p.addButton({ title: 'reseed' }).on('click', () => {
     if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; }   // cancel an in-flight skip morph
