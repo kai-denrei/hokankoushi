@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="9b56c30d">
+<meta name="cb" content="47c69656">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #050807; }
@@ -42,6 +42,24 @@
   #gear.open { color: #ffe9a3; transform: rotate(90deg); }
   #aboutBtn.open { color: #ffe9a3; }
   #nextBtn:hover { transform: translateX(2px); }
+  #exp.open { color: #ffe9a3; }
+
+  /* Experiments flyout — anchored above the bottom-left flask. */
+  #expMenu {
+    position: fixed; left: 14px; bottom: 52px; z-index: 12; display: none;
+    background: rgba(10, 14, 16, 0.92); border: 1px solid rgba(122, 180, 170, 0.18);
+    border-radius: 8px; padding: 6px 4px; min-width: 132px;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  #expMenu.open { display: block; }
+  #expMenu .xrow {
+    display: flex; justify-content: space-between; gap: 14px; align-items: baseline;
+    padding: 5px 10px; border-radius: 5px; cursor: pointer;
+    font: 11px/1.3 ui-monospace, "SF Mono", Menlo, monospace; color: #9fb8b2; user-select: none;
+  }
+  #expMenu .xrow:hover { background: rgba(122, 180, 170, 0.08); color: #ffe9a3; }
+  #expMenu .xrow .state { color: #4a5a56; }
+  #expMenu .xrow.on .state { color: #ffe9a3; }
 
   /* Explanation panel (bottom-right). */
   #about {
@@ -128,6 +146,15 @@
     <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
   </svg>
 </button>
+
+<button id="exp" class="corner bl" aria-label="experimental" title="experimental">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 2v6.3L4.6 17.6A2.4 2.4 0 0 0 6.7 21h10.6a2.4 2.4 0 0 0 2.1-3.4L14 8.3V2"></path>
+    <path d="M8.5 2h7"></path><path d="M7.3 15h9.4"></path>
+  </svg>
+</button>
+<div id="expMenu" role="menu" aria-label="experiments"></div>
 <div id="about">
   <h1>Neural Sheet</h1>
   <p class="sub">A faux self-organizing map — all interpolation, zero learning.</p>
@@ -302,6 +329,16 @@ const CONFIG = {
     ripple: 0.05,          // click ripple amplitude, world units (0 disables)
     rippleSpeed: 14,       // wavefront speed, grid units/sec
     parallax: 0.15,        // camera parallax from pointer position (0 disables)
+  },
+
+  tetris: {                // "experimental" flyout: zero-player tetris on a lattice patch
+    tickMs: 350,           // gravity interval
+    flawRate: 0.15,        // chance of a deliberately mediocre placement (stack breathes)
+    clearFlashMs: 150,     // line-clear: flash to hot white-amber
+    dissolveMs: 400,       // ...then alpha fades out
+    collapseMs: 200,       // rows above glide down along the surface
+    particleCount: 6,      // burst particles per cleared cell (0 disables)
+    dimStack: 0.55,        // settled-stack brightness vs the falling piece
   },
 };
 
@@ -806,6 +843,275 @@ function applyPalette() {
   nodeMat.uniforms.uExposure.value = ex;
   nodeMat.uniforms.uFogDensity.value = p.fog;
   if (dust) { dust.material.color.set(p.dust).multiplyScalar(ex); dust.material.opacity = p.dustOpacity; }
+  refreshTetrisColors();   // piece colours ride the same ramp — recompute on any palette edit
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Experiment overlay — tetris cells as quads riding the deformed sheet.
+// The board (sim defined below, near the timeline) occupies a 10×20 patch of
+// lattice cells; every cell quad samples the shared `positions` buffer each
+// frame, so folds / wobble / ripples deform the game for free. Lazy-built on
+// first toggle; invisible + unticked when off (zero per-frame cost).
+// ─────────────────────────────────────────────────────────────────────────────
+const BU0 = 27, BV0 = 20;      // patch origin: board (c, r) → lattice (BU0+c, BV0+r)
+const TETRIS_LIFT = 0.004;     // offset along the surface normal, above the wire
+
+// The node shader's colormaps (Matt Zucker polynomial fits), ported so JS can
+// pick the 7 piece colours off the same ramp the nodes use.
+const CM_COEF = {
+  viridis: [[0.2777,0.0054,0.3341],[0.1051,1.4046,1.3846],[-0.3308,0.2148,0.0951],[-4.6342,-5.7991,-19.3324],[6.2283,14.1799,56.6906],[4.7764,-13.7451,-65.3530],[-5.4355,4.6459,26.3124]],
+  inferno: [[0.0002,0.0017,-0.0195],[0.1065,0.5640,3.9327],[11.6025,-3.9729,-15.9424],[-41.7040,17.4364,44.3541],[77.1629,-33.4024,-81.8073],[-71.3194,32.6261,73.2095],[25.1311,-12.2427,-23.0703]],
+  magma:   [[-0.0021,-0.0007,-0.0054],[0.2517,0.6775,2.4940],[8.3537,-3.5777,0.3145],[-27.6687,14.2647,-13.6492],[52.1761,-27.9436,12.9442],[-50.7685,29.0466,4.2342],[18.6557,-11.4898,-5.6020]],
+  turbo:   [[0.1141,0.0629,0.2248],[6.7164,3.1823,7.5716],[-66.0940,-4.9280,-10.0944],[228.7661,25.0499,-91.5411],[-334.8352,-69.3175,288.5859],[218.7637,67.5215,-305.2046],[-52.8890,-21.5453,110.5175]],
+};
+function cmapJS(name, t) {
+  const C = CM_COEF[name];
+  if (!C) {   // colormap 'none': the base→hot teal/amber ladder
+    return new THREE.Color(CONFIG.palette.nodeBase).lerp(new THREE.Color(CONFIG.palette.nodeHot), t);
+  }
+  let r = 0, g = 0, b = 0;
+  for (let i = 6; i >= 0; i--) { r = r * t + C[i][0]; g = g * t + C[i][1]; b = b * t + C[i][2]; }
+  const cl = (x) => Math.max(0, Math.min(1, x));
+  return new THREE.Color(cl(r), cl(g), cl(b));
+}
+let PIECE_RGB = [null];
+function refreshTetrisColors() {   // 7 stations along the active ramp; piece type t → t/8
+  PIECE_RGB = [null];
+  for (let t = 1; t <= 7; t++) PIECE_RGB.push(cmapJS(CONFIG.palette.colormap, t / 8));
+  if (window.__tetris) window.__tetris.dirty = true;
+}
+
+let tetrisMesh = null, tetrisPosArr = null, tetrisColArr = null;
+const _tpv = [0, 0, 0], _tnv = [0, 0, 0];
+
+function patchPointInto(out, pu, pv) {  // patch coords; both axes may be fractional
+  const uf = BU0 + pu, vf = BV0 + pv;
+  const u0 = Math.floor(uf), fu = uf - u0, v0 = Math.floor(vf), fv = vf - v0;
+  const i00 = (v0 * COLS + u0) * 3, i10 = i00 + 3;
+  const i01 = ((v0 + 1) * COLS + u0) * 3, i11 = i01 + 3;
+  for (let c = 0; c < 3; c++) {         // bilinear over the cell's four lattice corners
+    const a = positions[i00 + c] + (positions[i10 + c] - positions[i00 + c]) * fu;
+    const b = positions[i01 + c] + (positions[i11 + c] - positions[i01 + c]) * fu;
+    out[c] = a + (b - a) * fv;
+  }
+}
+function patchNormalInto(out, u, v) {   // lattice coords (integer); wobble-loop idiom
+  const uL = (v * COLS + u - 1) * 3, uR = (v * COLS + u + 1) * 3;
+  const vD = ((v - 1) * COLS + u) * 3, vU = ((v + 1) * COLS + u) * 3;
+  const tux = positions[uR] - positions[uL], tuy = positions[uR + 1] - positions[uL + 1], tuz = positions[uR + 2] - positions[uL + 2];
+  const tvx = positions[vU] - positions[vD], tvy = positions[vU + 1] - positions[vD + 1], tvz = positions[vU + 2] - positions[vD + 2];
+  let nx = tuy * tvz - tuz * tvy, ny = tuz * tvx - tux * tvz, nz = tux * tvy - tuy * tvx;
+  const nl = Math.hypot(nx, ny, nz) || 1;
+  out[0] = nx / nl; out[1] = ny / nl; out[2] = nz / nl;
+}
+
+function initTetrisMesh() {
+  tetrisPosArr = new Float32Array(200 * 4 * 3);
+  tetrisColArr = new Float32Array(200 * 4 * 4);
+  const idx = [];
+  for (let cell = 0; cell < 200; cell++) {
+    const b = cell * 4;
+    idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setIndex(idx);
+  const pa = new THREE.BufferAttribute(tetrisPosArr, 3); pa.setUsage(THREE.DynamicDrawUsage);
+  const ca = new THREE.BufferAttribute(tetrisColArr, 4); ca.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pa);
+  g.setAttribute('aColor', ca);
+  const m = new THREE.ShaderMaterial({
+    uniforms: { uFogDensity: { value: CONFIG.palette.fog } },
+    vertexShader: /* glsl */`
+      attribute vec4 aColor;
+      varying vec4 vColor;
+      varying float vFogDepth;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vFogDepth = -mv.z;
+        vColor = aColor;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      precision highp float;
+      uniform float uFogDensity;
+      varying vec4 vColor;
+      varying float vFogDepth;
+      void main() {
+        if (vColor.a < 0.004) discard;         // empty cells cost nothing
+        float fog = exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
+        gl_FragColor = vec4(vColor.rgb, vColor.a * fog);
+      }`,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  });
+  tetrisMesh = new THREE.Mesh(g, m);
+  tetrisMesh.frustumCulled = false;
+  tetrisMesh.renderOrder = 2;                  // after the wire so tiles sit on top
+  tetrisMesh.visible = false;
+  scene.add(tetrisMesh);
+}
+
+// Collapse glide: rows above a cleared line ride down along the surface (fractional v).
+const easeInOut = (t) => t * t * (3 - 2 * t);
+function tetrisGlideOffset(r, clock) {
+  if (tetris.state !== 'collapsing' || reduce) return 0;
+  let below = 0;
+  for (const cr of tetris.clearingRows) if (cr > r) below++;
+  if (!below) return 0;
+  const t = Math.min(1, (clock - tetris.collapseStart) * 1000 / CONFIG.tetris.collapseMs);
+  return easeInOut(t) * below;
+}
+
+function setTetrisCellColor(cell, type, mul, alpha) {
+  const col = type ? PIECE_RGB[type] : null, b = cell * 16;
+  for (let k = 0; k < 4; k++) {
+    tetrisColArr[b + k * 4]     = col ? Math.min(1, col.r * mul) : 0;
+    tetrisColArr[b + k * 4 + 1] = col ? Math.min(1, col.g * mul) : 0;
+    tetrisColArr[b + k * 4 + 2] = col ? Math.min(1, col.b * mul) : 0;
+    tetrisColArr[b + k * 4 + 3] = alpha;
+  }
+}
+function setTetrisCellFlash(cell, type, mix, alpha) {   // lerp piece colour → hot white-amber
+  const col = PIECE_RGB[type], b = cell * 16;
+  const r = col.r + (1.0 - col.r) * mix, g = col.g + (0.93 - col.g) * mix, bl = col.b + (0.68 - col.b) * mix;
+  for (let k = 0; k < 4; k++) {
+    tetrisColArr[b + k * 4] = r; tetrisColArr[b + k * 4 + 1] = g; tetrisColArr[b + k * 4 + 2] = bl;
+    tetrisColArr[b + k * 4 + 3] = alpha;
+  }
+}
+function writeTetrisColors(clock) {
+  const T = CONFIG.tetris;
+  const clearing = tetris.state === 'clearing';
+  const e = clearing ? (clock - tetris.clearStart) * 1000 : 0;
+  for (let cell = 0; cell < 200; cell++) {
+    const ty = tetris.board[cell], row = (cell / 10) | 0;
+    if (!ty) { setTetrisCellColor(cell, 0, 0, 0); continue; }
+    const inClear = tetris.clearingRows.includes(row) || (clearing && tetris.topOut);
+    if (inClear && clearing) {
+      if (e < T.clearFlashMs) setTetrisCellFlash(cell, ty, e / T.clearFlashMs, 0.95);          // flash up
+      else {                                                                                   // dissolve out
+        const d = Math.min(1, (e - T.clearFlashMs) / T.dissolveMs), inv = 1 - d;
+        setTetrisCellFlash(cell, ty, 1, 0.95 * inv * inv * inv);
+      }
+    } else if (inClear) setTetrisCellColor(cell, 0, 0, 0);            // collapsing: cleared rows are gone
+    else setTetrisCellColor(cell, ty, T.dimStack, 0.7);               // settled stack, dimmed
+  }
+  const a = tetris.active;                     // falling piece, sparkle-hot
+  if (a) for (const [x, y] of TETRO[a.type][a.rot]) {
+    const r = a.row + y, c = a.col + x;
+    if (r >= 0 && r < 20 && c >= 0 && c < 10) setTetrisCellColor(r * 10 + c, a.type, 1.2, 0.92);
+  }
+}
+
+// One-shot clear bursts — a small pooled Points layer, ejected along the normal.
+const TETRIS_PMAX = 480, TETRIS_PLIFE = 0.7;   // pool size / particle life (s)
+let tetrisParticles = null, tpPos = null, tpVel = null, tpLife = null, tpAlphaAttr = null;
+function initTetrisParticles() {
+  tpPos = new Float32Array(TETRIS_PMAX * 3);
+  tpVel = new Float32Array(TETRIS_PMAX * 3);
+  tpLife = new Float32Array(TETRIS_PMAX);
+  const g = new THREE.BufferGeometry();
+  const pa = new THREE.BufferAttribute(tpPos, 3); pa.setUsage(THREE.DynamicDrawUsage);
+  tpAlphaAttr = new THREE.BufferAttribute(new Float32Array(TETRIS_PMAX), 1); tpAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pa);
+  g.setAttribute('aAlpha', tpAlphaAttr);
+  const m = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(CONFIG.palette.nodeHot) }, uDpr: { value: renderer.getPixelRatio() } },
+    vertexShader: /* glsl */`
+      attribute float aAlpha; varying float vAlpha; uniform float uDpr;
+      void main() {
+        vAlpha = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = 3.0 * uDpr;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      precision highp float; uniform vec3 uColor; varying float vAlpha;
+      void main() {
+        if (vAlpha < 0.004) discard;
+        vec2 pc = gl_PointCoord - 0.5;
+        if (dot(pc, pc) > 0.25) discard;
+        gl_FragColor = vec4(uColor, vAlpha);
+      }`,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  tetrisParticles = new THREE.Points(g, m);
+  tetrisParticles.frustumCulled = false;
+  tetrisParticles.visible = false;
+  scene.add(tetrisParticles);
+}
+function spawnClearBurst() {                   // burst from every cell being cleared right now
+  if (reduce || !tetrisParticles) return;
+  const T = CONFIG.tetris;
+  if (T.particleCount <= 0) return;
+  const cells = [];
+  if (tetris.topOut) { for (let cell = 0; cell < 200; cell++) if (tetris.board[cell]) cells.push(cell); }
+  else for (const r of tetris.clearingRows) for (let c = 0; c < 10; c++) cells.push(r * 10 + c);
+  let k = 0;
+  for (const cell of cells) {
+    const r = (cell / 10) | 0, c = cell % 10;
+    patchPointInto(_tpv, c + 0.5, r + 0.5);
+    patchNormalInto(_tnv, BU0 + c, BV0 + r);
+    for (let n = 0; n < T.particleCount && k < TETRIS_PMAX; n++, k++) {
+      const k3 = k * 3, sp = 0.25 + Math.random() * 0.2;
+      tpPos[k3] = _tpv[0]; tpPos[k3 + 1] = _tpv[1]; tpPos[k3 + 2] = _tpv[2];
+      tpVel[k3]     = _tnv[0] * sp + (Math.random() - 0.5) * 0.08;
+      tpVel[k3 + 1] = _tnv[1] * sp + (Math.random() - 0.5) * 0.08;
+      tpVel[k3 + 2] = _tnv[2] * sp + (Math.random() - 0.5) * 0.08;
+      tpLife[k] = TETRIS_PLIFE;
+    }
+  }
+  for (; k < TETRIS_PMAX; k++) tpLife[k] = 0;  // retire the rest of the pool
+}
+function updateTetrisParticles(dt) {
+  if (!tetrisParticles) return;
+  let any = false;
+  for (let k = 0; k < TETRIS_PMAX; k++) {
+    if (tpLife[k] <= 0) { tpAlphaAttr.array[k] = 0; continue; }
+    any = true;
+    tpLife[k] -= dt;
+    const k3 = k * 3;
+    tpPos[k3] += tpVel[k3] * dt; tpPos[k3 + 1] += tpVel[k3 + 1] * dt; tpPos[k3 + 2] += tpVel[k3 + 2] * dt;
+    tpVel[k3] *= 0.98; tpVel[k3 + 1] *= 0.98; tpVel[k3 + 2] *= 0.98;
+    tpAlphaAttr.array[k] = Math.max(0, tpLife[k] / TETRIS_PLIFE) * 0.9;
+  }
+  if (any || dt === 0) {
+    tetrisParticles.geometry.attributes.position.needsUpdate = true;
+    tpAlphaAttr.needsUpdate = true;
+  }
+}
+
+let tetrisPrevState = 'falling';
+function updateTetrisFrame(clock, dt) {
+  if (!tetrisMesh) return;
+  if (tetris.state === 'clearing' && tetrisPrevState !== 'clearing') spawnClearBurst();
+  tetrisPrevState = tetris.state;
+  // Positions every frame — the sheet moves under the board.
+  let vi = 0;
+  for (let r = 0; r < 20; r++) {
+    const vOff = tetrisGlideOffset(r, clock);
+    for (let c = 0; c < 10; c++) {
+      for (let k = 0; k < 4; k++) {            // corners (c+k&1, r+(k>>1)) — matches the index winding
+        const pu = c + (k & 1), pv = r + (k >> 1) + vOff;
+        patchPointInto(_tpv, pu, pv);
+        patchNormalInto(_tnv, BU0 + pu, BV0 + Math.round(pv));
+        const o = vi * 3;
+        tetrisPosArr[o]     = _tpv[0] + _tnv[0] * TETRIS_LIFT;
+        tetrisPosArr[o + 1] = _tpv[1] + _tnv[1] * TETRIS_LIFT;
+        tetrisPosArr[o + 2] = _tpv[2] + _tnv[2] * TETRIS_LIFT;
+        vi++;
+      }
+    }
+  }
+  tetrisMesh.geometry.attributes.position.needsUpdate = true;
+  // Colours when the board changed — and every frame of a clear (it animates).
+  if (tetris.dirty || tetris.state !== 'falling') {
+    writeTetrisColors(clock);
+    tetris.dirty = false;
+    tetrisMesh.geometry.attributes.aColor.needsUpdate = true;
+  }
+  tetrisMesh.material.uniforms.uFogDensity.value = CONFIG.palette.fog;
+  updateTetrisParticles(dt);
+  if (tetrisParticles) tetrisParticles.material.uniforms.uColor.value.set(CONFIG.palette.nodeHot);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -974,6 +1280,132 @@ function updatePositions(t, elapsed, gp) {
   }
   posAttr.needsUpdate = true;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Experiment: zero-player Tetris in board space (no 3-D knowledge).
+// Fake SOM, meet fake Tetris: pieces fall and lines clear with nobody playing.
+// A greedy policy scores every (rotation × column) drop, then picks among the
+// best with a dash of randomness (CONFIG.tetris.flawRate) so the stack breathes.
+// The 3-D overlay that draws this board lives further down, after the layers.
+// ─────────────────────────────────────────────────────────────────────────────
+const TETRO = {              // [type] = rotations; each rotation = 4 [x, y] cells
+  1: [[[0,1],[1,1],[2,1],[3,1]], [[2,0],[2,1],[2,2],[2,3]]],                                   // I
+  2: [[[1,0],[2,0],[1,1],[2,1]]],                                                              // O
+  3: [[[1,0],[0,1],[1,1],[2,1]], [[1,0],[1,1],[2,1],[1,2]], [[0,1],[1,1],[2,1],[1,2]], [[1,0],[0,1],[1,1],[1,2]]], // T
+  4: [[[1,0],[2,0],[0,1],[1,1]], [[1,0],[1,1],[2,1],[2,2]]],                                   // S
+  5: [[[0,0],[1,0],[1,1],[2,1]], [[2,0],[1,1],[2,1],[1,2]]],                                   // Z
+  6: [[[0,0],[0,1],[1,1],[2,1]], [[1,0],[2,0],[1,1],[1,2]], [[0,1],[1,1],[2,1],[2,2]], [[1,0],[1,1],[0,2],[1,2]]], // J
+  7: [[[2,0],[0,1],[1,1],[2,1]], [[1,0],[1,1],[1,2],[2,2]], [[0,1],[1,1],[2,1],[0,2]], [[0,0],[1,0],[1,1],[1,2]]], // L
+};
+const tetris = {
+  W: 10, H: 20, board: new Uint8Array(200), bag: [], active: null,
+  state: 'falling',          // 'falling' | 'clearing' (flash+dissolve) | 'collapsing'
+  clearingRows: [], clearStart: 0, collapseStart: 0, topOut: false,
+  lastTick: 0, dirty: true,
+  cellAt(c, r) { return (c < 0 || c >= 10 || r >= 20) ? 1 : (r < 0 ? 0 : this.board[r * 10 + c]); },
+  fits(type, rot, col, row) {
+    for (const [x, y] of TETRO[type][rot]) if (this.cellAt(col + x, row + y)) return false;
+    return true;
+  },
+  nextType() {               // 7-bag randomizer
+    if (!this.bag.length) {
+      this.bag = [1, 2, 3, 4, 5, 6, 7];
+      for (let i = 6; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [this.bag[i], this.bag[j]] = [this.bag[j], this.bag[i]]; }
+    }
+    return this.bag.pop();
+  },
+  dropRow(type, rot, col) {  // landing row for a drop in col; null if even the spawn row is blocked
+    let row = -2;
+    if (!this.fits(type, rot, col, row)) return null;
+    while (this.fits(type, rot, col, row + 1)) row++;
+    return row;
+  },
+  plan(type) {               // greedy scored placement, deliberately imperfect
+    const opts = [];
+    for (let rot = 0; rot < TETRO[type].length; rot++)
+      for (let col = -2; col < 10; col++) {
+        const row = this.dropRow(type, rot, col);
+        if (row === null) continue;
+        const b = this.board.slice();          // simulate the lock on a copy
+        for (const [x, y] of TETRO[type][rot]) if (row + y >= 0) b[(row + y) * 10 + col + x] = type;
+        let lines = 0;
+        for (let r = 0; r < 20; r++) { let full = true; for (let c = 0; c < 10; c++) if (!b[r * 10 + c]) { full = false; break; } if (full) lines++; }
+        let holes = 0, aggH = 0;
+        for (let c = 0; c < 10; c++) {
+          let seen = false;
+          for (let r = 0; r < 20; r++) {
+            if (b[r * 10 + c]) { if (!seen) { seen = true; aggH += 20 - r; } }
+            else if (seen) holes++;
+          }
+        }
+        opts.push({ rot, col, score: lines * 40 - holes * 12 - aggH * 0.8 });
+      }
+    if (!opts.length) return null;
+    opts.sort((a, b) => b.score - a.score);
+    const pool = Math.random() < CONFIG.tetris.flawRate
+      ? opts.slice(0, Math.min(8, opts.length))
+      : opts.slice(0, Math.min(3, opts.length));
+    return pool[(Math.random() * pool.length) | 0];
+  },
+  beginTopOut(clock) {       // stack reached the top: dissolve everything, keep playing
+    this.state = 'clearing'; this.clearingRows = []; this.clearStart = clock;
+    this.topOut = true; this.active = null; this.dirty = true;
+  },
+  spawn(clock) {
+    const type = this.nextType();
+    const p = this.plan(type);
+    if (!p) { this.beginTopOut(clock); return; }
+    const col = this.fits(type, p.rot, 3, -2) ? 3 : p.col;   // classic spawn col, else start at target
+    this.active = { type, rot: p.rot, col, row: -2, targetCol: p.col };
+  },
+  step(clock) {              // gravity/animation driver — called from frame() when on and !paused
+    const T = CONFIG.tetris;
+    if (this.state === 'clearing') {
+      if ((clock - this.clearStart) * 1000 >= T.clearFlashMs + T.dissolveMs) {
+        if (this.topOut) { this.board.fill(0); this.topOut = false; this.state = 'falling'; }
+        else { this.collapseStart = clock; this.state = 'collapsing'; }
+        this.dirty = true;
+      }
+      return;
+    }
+    if (this.state === 'collapsing') {
+      if ((clock - this.collapseStart) * 1000 >= T.collapseMs) {
+        for (const cr of this.clearingRows.slice().sort((a, b) => a - b)) {   // top → bottom
+          for (let r = cr; r > 0; r--) this.board.copyWithin(r * 10, (r - 1) * 10, r * 10);
+          this.board.fill(0, 0, 10);           // the vacated top row
+        }
+        this.clearingRows = []; this.state = 'falling'; this.dirty = true;
+      }
+      return;
+    }
+    if (clock - this.lastTick < T.tickMs / 1000) return;
+    this.lastTick = clock;
+    if (!this.active) { this.spawn(clock); this.dirty = true; return; }
+    const a = this.active;
+    if (a.col !== a.targetCol) {               // move-then-fall toward the planned column
+      const dir = a.targetCol > a.col ? 1 : -1;
+      if (this.fits(a.type, a.rot, a.col + dir, a.row)) a.col += dir;
+    }
+    if (this.fits(a.type, a.rot, a.col, a.row + 1)) { a.row++; this.dirty = true; return; }
+    // lock — cells above the visible board mean the stack hit the ceiling
+    let above = false;
+    for (const [x, y] of TETRO[a.type][a.rot]) {
+      if (a.row + y < 0) { above = true; continue; }
+      this.board[(a.row + y) * 10 + a.col + x] = a.type;
+    }
+    this.active = null;
+    if (above) { this.beginTopOut(clock); return; }
+    const full = [];
+    for (let r = 0; r < 20; r++) { let f = true; for (let c = 0; c < 10; c++) if (!this.board[r * 10 + c]) { f = false; break; } if (f) full.push(r); }
+    if (full.length) { this.state = 'clearing'; this.clearingRows = full; this.clearStart = clock; }
+    this.dirty = true;
+  },
+  reset() {
+    this.board.fill(0); this.bag = []; this.active = null; this.state = 'falling';
+    this.clearingRows = []; this.topOut = false; this.dirty = true;
+  },
+};
+window.__tetris = tetris;    // QA hook (headless harness + Playwright)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Timeline state machine: fold → hold → (reverse | restart | nextTarget).
@@ -1161,6 +1593,10 @@ function frame(now) {
 
   const _t0 = perfOn ? performance.now() : 0;   // QA-only: isolate CPU-JS from GPU
   updatePositions(morphT, clock, gp);
+  if (experiments.tetris.on) {                  // experiment rides the fresh positions
+    if (!paused) tetris.step(clock);
+    updateTetrisFrame(clock, paused ? 0 : dt);
+  }
   if (!paused) {                      // ease dust toward the (blended) target — no jumps
     // the tesseract target moves every frame; once it's folded, track it tightly so dust
     // rides the surface instead of trailing behind (still eases during a fold-in / switch).
@@ -1243,7 +1679,7 @@ window.addEventListener('resize', onResize);
 // ─────────────────────────────────────────────────────────────────────────────
 if (!reduce) {
   const toNDC = (e) => [(e.clientX / window.innerWidth) * 2 - 1, -((e.clientY / window.innerHeight) * 2 - 1)];
-  const overUI = (e) => !!(e.target.closest && e.target.closest('#gear, #panel, #nextBtn, #aboutBtn, #about'));
+  const overUI = (e) => !!(e.target.closest && e.target.closest('#gear, #panel, #nextBtn, #aboutBtn, #about, #exp, #expMenu'));
   const leave = () => { pointerInside = false; tpx = 0; tpy = 0; };
   window.addEventListener('pointermove', (e) => {
     const [nx, ny] = toNDC(e);
@@ -1314,6 +1750,50 @@ function addCorner(el, isOpen) {
 addCorner(gearEl, () => panelOpen);
 addCorner(aboutBtn, () => aboutOpen);
 addCorner(nextBtn, () => false);
+
+// Experiments registry — the bottom-left flask opens this menu. Each entry's
+// toggle(on) is installed by its own layer (tetris wires the real one below);
+// future experiments just add a row here.
+const experiments = { tetris: { label: 'tetris', on: false, toggle() {} } };
+const expBtn = document.getElementById('exp');
+const expMenu = document.getElementById('expMenu');
+let expOpen = false;
+function renderExpMenu() {
+  expMenu.innerHTML = '';
+  for (const x of Object.values(experiments)) {
+    const row = document.createElement('div');
+    row.className = 'xrow' + (x.on ? ' on' : '');
+    row.innerHTML = '<span>' + x.label + '</span><span class="state">' + (x.on ? 'on' : 'off') + '</span>';
+    row.addEventListener('click', () => { x.on = !x.on; x.toggle(x.on); renderExpMenu(); });
+    expMenu.appendChild(row);
+  }
+}
+function setExpOpen(open) {
+  expOpen = open;
+  expMenu.classList.toggle('open', open);
+  expBtn.classList.toggle('open', open);
+  if (open) renderExpMenu();
+}
+expBtn.addEventListener('click', (e) => { e.stopPropagation(); setExpOpen(!expOpen); });
+window.addEventListener('pointerdown', (e) => {
+  if (expOpen && !(e.target.closest && e.target.closest('#exp, #expMenu'))) setExpOpen(false);
+});
+addCorner(expBtn, () => expOpen);
+experiments.tetris.toggle = (on) => {
+  if (on && !tetrisMesh) { initTetrisMesh(); if (!reduce) initTetrisParticles(); }  // lazy
+  if (tetrisMesh) tetrisMesh.visible = on;
+  if (tetrisParticles) tetrisParticles.visible = on;
+  if (on) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
+  if (reduce) {                                // static path: draw one settled mid-game frame
+    if (on) {
+      // No frame loop, so fast-forward with synthetic 1s ticks: a few pieces
+      // fall, lock and stack, then render that state once.
+      for (let i = 1; i <= 60; i++) tetris.step(clock + i);
+      updateTetrisFrame(clock + 61, 0);
+    }
+    renderReducedStatic();
+  }
+};
 window.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') return;
   for (const hs of hotspots) hs.target = smoothstep(240, 70, Math.hypot(e.clientX - hs.anchor.x, e.clientY - hs.anchor.y));
@@ -1364,7 +1844,7 @@ function toggleAbout() {
 gearEl.addEventListener('click', (e) => { e.stopPropagation(); togglePanel(); });
 aboutBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleAbout(); });
 nextBtn.addEventListener('click', (e) => { e.stopPropagation(); skipToNext(); });
-window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (panelOpen) togglePanel(); if (aboutOpen) toggleAbout(); } });
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (panelOpen) togglePanel(); if (aboutOpen) toggleAbout(); if (expOpen) setExpOpen(false); } });
 
 const SHAPE_OPTS = { torus: 'torus', 'swiss roll': 'swissRoll', 'sphere band': 'sphereBand', mobius: 'mobius', superformula: 'superformula', harmonic: 'sphericalHarmonic', tesseract: 'tesseract', pyramid: 'pyramid', bipyramid: 'bipyramid' };
 function buildBindings(p) {
@@ -1449,6 +1929,16 @@ function buildBindings(p) {
   mouse.addBinding(CONFIG.mouse, 'ripple', { min: 0, max: 0.15, step: 0.005, label: 'click ripple' });
   mouse.addBinding(CONFIG.mouse, 'rippleSpeed', { min: 2, max: 40, step: 1, label: 'ripple speed' });
   mouse.addBinding(CONFIG.mouse, 'parallax', { min: 0, max: 0.5, step: 0.01 });
+
+  const tet = p.addFolder({ title: 'tetris', expanded: false });
+  tet.addBinding(CONFIG.tetris, 'tickMs', { min: 100, max: 1200, step: 10, label: 'gravity ms' });
+  tet.addBinding(CONFIG.tetris, 'flawRate', { min: 0, max: 1, step: 0.01, label: 'flaw rate' });
+  tet.addBinding(CONFIG.tetris, 'dimStack', { min: 0, max: 1, step: 0.01, label: 'stack dim' })
+     .on('change', () => { tetris.dirty = true; });
+  tet.addBinding(CONFIG.tetris, 'particleCount', { min: 0, max: 12, step: 1, label: 'burst / cell' });
+  tet.addBinding(CONFIG.tetris, 'clearFlashMs', { min: 0, max: 1500, step: 10, label: 'flash ms' });
+  tet.addBinding(CONFIG.tetris, 'dissolveMs', { min: 0, max: 1500, step: 10, label: 'dissolve ms' });
+  tet.addBinding(CONFIG.tetris, 'collapseMs', { min: 0, max: 1500, step: 10, label: 'collapse ms' });
 
   p.addButton({ title: 'reseed' }).on('click', () => {
     if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; }   // cancel an in-flight skip morph

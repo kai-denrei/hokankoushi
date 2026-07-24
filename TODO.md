@@ -19,7 +19,9 @@
 - [x] **top-right** — controls (gear → Tweakpane panel)
 - [x] **bottom-right** — explanation (book → math + code)
 - [x] **top-left** — force next shape (skip ⏭)
-- [ ] **bottom-left** — undecided. Candidates: play/pause · hide-all-UI (pure art mode) ·
+- [x] **bottom-left** — experiments (flask → flyout menu) — done 2026-07-24. First experiment:
+      zero-player Tetris on a 10×20 lattice patch (spec + plan in `docs/superpowers/`).
+      Parked candidates for other corners/menu rows: play/pause · hide-all-UI (pure art mode) ·
       shareable-URL snapshot of the current CONFIG · fullscreen · reseed.
 
 ## Ideas parked (from earlier brainstorm)
