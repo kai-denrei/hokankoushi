@@ -34,3 +34,13 @@ A score at the top-left of the canvas counting cleared lines, rendered with the 
 Playwright: enable play, seed a near-full row, hard-drop the finisher → counter 1 and canvas
 non-blank; double clear → 3; auto mode accrues on its own; toggle off hides; fresh re-enable
 resets to 0.
+
+## Amendment (operator correction, same day)
+
+The score is rendered **on the neural sheet**, not as a DOM overlay: a lattice patch at the
+sheet's top-left (origin u=2, v=2), 15×5 cells = up to 4 digits (3 columns + 1 gap each,
+display clamped at 9999). Same cell-quad idiom as the board — quads sample the shared deformed
+`positions` buffer with normal lift and share the board mesh's material — so the digits fold,
+wobble and ripple with the sheet. Lit cells `CONFIG.palette.nodeHot` at alpha 0.92, unlit
+alpha 0. Repaint on count change (and on palette change). The DOM `<canvas id="score">`, its
+CSS and the HUD-shift rule are removed.
