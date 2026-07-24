@@ -27,7 +27,9 @@ map. One `CONFIG` object drives every visual.
   `W` rotate · `A`/`D` move · `S` soft drop · `space` hard drop (all board-space — S is always
   board-down no matter how the sheet is folded; space returns to pause when play is off). On
   touch: swipe left/right to move, swipe down to drop, tap to rotate. The board carries over
-  when switching modes.
+  when switching modes. In play the tour skips the most distorting shapes and rests longer on
+  the flat sheet, angled toward you; on touch, game swipes are contained so they can't trigger
+  browser navigation.
 - A live control panel (Tweakpane) bound to `CONFIG`; `prefers-reduced-motion` renders a static
   folded frame.
 
