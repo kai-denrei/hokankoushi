@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="9b56c30d">
+<meta name="cb" content="47c69656">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #050807; }
@@ -1784,8 +1784,13 @@ experiments.tetris.toggle = (on) => {
   if (tetrisMesh) tetrisMesh.visible = on;
   if (tetrisParticles) tetrisParticles.visible = on;
   if (on) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
-  if (reduce) {                                // static path: draw one settled frame
-    if (on) { tetris.step(clock); updateTetrisFrame(clock, 0); }
+  if (reduce) {                                // static path: draw one settled mid-game frame
+    if (on) {
+      // No frame loop, so fast-forward with synthetic 1s ticks: a few pieces
+      // fall, lock and stack, then render that state once.
+      for (let i = 1; i <= 60; i++) tetris.step(clock + i);
+      updateTetrisFrame(clock + 61, 0);
+    }
     renderReducedStatic();
   }
 };
@@ -1924,6 +1929,16 @@ function buildBindings(p) {
   mouse.addBinding(CONFIG.mouse, 'ripple', { min: 0, max: 0.15, step: 0.005, label: 'click ripple' });
   mouse.addBinding(CONFIG.mouse, 'rippleSpeed', { min: 2, max: 40, step: 1, label: 'ripple speed' });
   mouse.addBinding(CONFIG.mouse, 'parallax', { min: 0, max: 0.5, step: 0.01 });
+
+  const tet = p.addFolder({ title: 'tetris', expanded: false });
+  tet.addBinding(CONFIG.tetris, 'tickMs', { min: 100, max: 1200, step: 10, label: 'gravity ms' });
+  tet.addBinding(CONFIG.tetris, 'flawRate', { min: 0, max: 1, step: 0.01, label: 'flaw rate' });
+  tet.addBinding(CONFIG.tetris, 'dimStack', { min: 0, max: 1, step: 0.01, label: 'stack dim' })
+     .on('change', () => { tetris.dirty = true; });
+  tet.addBinding(CONFIG.tetris, 'particleCount', { min: 0, max: 12, step: 1, label: 'burst / cell' });
+  tet.addBinding(CONFIG.tetris, 'clearFlashMs', { min: 0, max: 1500, step: 10, label: 'flash ms' });
+  tet.addBinding(CONFIG.tetris, 'dissolveMs', { min: 0, max: 1500, step: 10, label: 'dissolve ms' });
+  tet.addBinding(CONFIG.tetris, 'collapseMs', { min: 0, max: 1500, step: 10, label: 'collapse ms' });
 
   p.addButton({ title: 'reseed' }).on('click', () => {
     if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; }   // cancel an in-flight skip morph

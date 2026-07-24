@@ -19,7 +19,11 @@ map. One `CONFIG` object drives every visual.
   A→B blend and a random no-repeat shape "tour".
 - Pointer interaction: cursor light, click ripples (damped waves), camera parallax.
 - Scientific colormaps (viridis / inferno / magma / turbo) for the node colour ramp.
-- Four proximity-revealed corner affordances (controls, explanation, next shape).
+- Four proximity-revealed corner affordances (controls, explanation, next shape, experiments).
+- **Experimental (bottom-left flask):** zero-player Tetris on a 10×20 patch of the lattice —
+  pieces fall along the surface, deform with every fold, and cleared lines flash, dissolve and
+  burst particles off the sheet. Nobody is playing; a deliberately imperfect greedy policy keeps
+  the stack breathing. Fake SOM, meet fake Tetris.
 - A live control panel (Tweakpane) bound to `CONFIG`; `prefers-reduced-motion` renders a static
   folded frame.
 
@@ -35,4 +39,4 @@ python3 -m http.server
 ## Controls
 
 `h` HUD · `space` pause · `r` reseed · `1`–`9` switch shape. Sweep the pointer toward a corner
-to reveal its control (gear = settings, book = explanation, ⏭ = next shape).
+to reveal its control (gear = settings, book = explanation, ⏭ = next shape, ⚗ = experiments).
