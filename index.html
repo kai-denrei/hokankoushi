@@ -884,14 +884,16 @@ function refreshTetrisColors() {   // 7 stations along the active ramp; piece ty
 let tetrisMesh = null, tetrisPosArr = null, tetrisColArr = null;
 const _tpv = [0, 0, 0], _tnv = [0, 0, 0];
 
-function patchPointInto(out, pu, pv) {  // patch coords; pv may be fractional (collapse glide)
-  const u = BU0 + pu, vf = BV0 + pv, v0 = Math.floor(vf), fr = vf - v0;
-  const i0 = (v0 * COLS + u) * 3;
-  if (fr < 1e-6) { out[0] = positions[i0]; out[1] = positions[i0 + 1]; out[2] = positions[i0 + 2]; return; }
-  const i1 = ((v0 + 1) * COLS + u) * 3;
-  out[0] = positions[i0] + (positions[i1] - positions[i0]) * fr;
-  out[1] = positions[i0 + 1] + (positions[i1 + 1] - positions[i0 + 1]) * fr;
-  out[2] = positions[i0 + 2] + (positions[i1 + 2] - positions[i0 + 2]) * fr;
+function patchPointInto(out, pu, pv) {  // patch coords; both axes may be fractional
+  const uf = BU0 + pu, vf = BV0 + pv;
+  const u0 = Math.floor(uf), fu = uf - u0, v0 = Math.floor(vf), fv = vf - v0;
+  const i00 = (v0 * COLS + u0) * 3, i10 = i00 + 3;
+  const i01 = ((v0 + 1) * COLS + u0) * 3, i11 = i01 + 3;
+  for (let c = 0; c < 3; c++) {         // bilinear over the cell's four lattice corners
+    const a = positions[i00 + c] + (positions[i10 + c] - positions[i00 + c]) * fu;
+    const b = positions[i01 + c] + (positions[i11 + c] - positions[i01 + c]) * fu;
+    out[c] = a + (b - a) * fv;
+  }
 }
 function patchNormalInto(out, u, v) {   // lattice coords (integer); wobble-loop idiom
   const uL = (v * COLS + u - 1) * 3, uR = (v * COLS + u + 1) * 3;
@@ -948,7 +950,16 @@ function initTetrisMesh() {
   scene.add(tetrisMesh);
 }
 
-function tetrisGlideOffset() { return 0; }     // collapse glide lands with the clear FX
+// Collapse glide: rows above a cleared line ride down along the surface (fractional v).
+const easeInOut = (t) => t * t * (3 - 2 * t);
+function tetrisGlideOffset(r, clock) {
+  if (tetris.state !== 'collapsing' || reduce) return 0;
+  let below = 0;
+  for (const cr of tetris.clearingRows) if (cr > r) below++;
+  if (!below) return 0;
+  const t = Math.min(1, (clock - tetris.collapseStart) * 1000 / CONFIG.tetris.collapseMs);
+  return easeInOut(t) * below;
+}
 
 function setTetrisCellColor(cell, type, mul, alpha) {
   const col = type ? PIECE_RGB[type] : null, b = cell * 16;
@@ -959,11 +970,30 @@ function setTetrisCellColor(cell, type, mul, alpha) {
     tetrisColArr[b + k * 4 + 3] = alpha;
   }
 }
-function writeTetrisColors() {
+function setTetrisCellFlash(cell, type, mix, alpha) {   // lerp piece colour → hot white-amber
+  const col = PIECE_RGB[type], b = cell * 16;
+  const r = col.r + (1.0 - col.r) * mix, g = col.g + (0.93 - col.g) * mix, bl = col.b + (0.68 - col.b) * mix;
+  for (let k = 0; k < 4; k++) {
+    tetrisColArr[b + k * 4] = r; tetrisColArr[b + k * 4 + 1] = g; tetrisColArr[b + k * 4 + 2] = bl;
+    tetrisColArr[b + k * 4 + 3] = alpha;
+  }
+}
+function writeTetrisColors(clock) {
   const T = CONFIG.tetris;
-  for (let cell = 0; cell < 200; cell++) {     // settled stack, dimmed
-    const ty = tetris.board[cell];
-    setTetrisCellColor(cell, ty, T.dimStack, ty ? 0.7 : 0);
+  const clearing = tetris.state === 'clearing';
+  const e = clearing ? (clock - tetris.clearStart) * 1000 : 0;
+  for (let cell = 0; cell < 200; cell++) {
+    const ty = tetris.board[cell], row = (cell / 10) | 0;
+    if (!ty) { setTetrisCellColor(cell, 0, 0, 0); continue; }
+    const inClear = tetris.clearingRows.includes(row) || (clearing && tetris.topOut);
+    if (inClear && clearing) {
+      if (e < T.clearFlashMs) setTetrisCellFlash(cell, ty, e / T.clearFlashMs, 0.95);          // flash up
+      else {                                                                                   // dissolve out
+        const d = Math.min(1, (e - T.clearFlashMs) / T.dissolveMs), inv = 1 - d;
+        setTetrisCellFlash(cell, ty, 1, 0.95 * inv * inv * inv);
+      }
+    } else if (inClear) setTetrisCellColor(cell, 0, 0, 0);            // collapsing: cleared rows are gone
+    else setTetrisCellColor(cell, ty, T.dimStack, 0.7);               // settled stack, dimmed
   }
   const a = tetris.active;                     // falling piece, sparkle-hot
   if (a) for (const [x, y] of TETRO[a.type][a.rot]) {
@@ -971,8 +1001,90 @@ function writeTetrisColors() {
     if (r >= 0 && r < 20 && c >= 0 && c < 10) setTetrisCellColor(r * 10 + c, a.type, 1.2, 0.92);
   }
 }
-function updateTetrisFrame(clock) {
+
+// One-shot clear bursts — a small pooled Points layer, ejected along the normal.
+const TETRIS_PMAX = 480, TETRIS_PLIFE = 0.7;   // pool size / particle life (s)
+let tetrisParticles = null, tpPos = null, tpVel = null, tpLife = null, tpAlphaAttr = null;
+function initTetrisParticles() {
+  tpPos = new Float32Array(TETRIS_PMAX * 3);
+  tpVel = new Float32Array(TETRIS_PMAX * 3);
+  tpLife = new Float32Array(TETRIS_PMAX);
+  const g = new THREE.BufferGeometry();
+  const pa = new THREE.BufferAttribute(tpPos, 3); pa.setUsage(THREE.DynamicDrawUsage);
+  tpAlphaAttr = new THREE.BufferAttribute(new Float32Array(TETRIS_PMAX), 1); tpAlphaAttr.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pa);
+  g.setAttribute('aAlpha', tpAlphaAttr);
+  const m = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(CONFIG.palette.nodeHot) }, uDpr: { value: renderer.getPixelRatio() } },
+    vertexShader: /* glsl */`
+      attribute float aAlpha; varying float vAlpha; uniform float uDpr;
+      void main() {
+        vAlpha = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = 3.0 * uDpr;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      precision highp float; uniform vec3 uColor; varying float vAlpha;
+      void main() {
+        if (vAlpha < 0.004) discard;
+        vec2 pc = gl_PointCoord - 0.5;
+        if (dot(pc, pc) > 0.25) discard;
+        gl_FragColor = vec4(uColor, vAlpha);
+      }`,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  tetrisParticles = new THREE.Points(g, m);
+  tetrisParticles.frustumCulled = false;
+  tetrisParticles.visible = false;
+  scene.add(tetrisParticles);
+}
+function spawnClearBurst() {                   // burst from every cell being cleared right now
+  if (reduce || !tetrisParticles) return;
+  const T = CONFIG.tetris;
+  if (T.particleCount <= 0) return;
+  const cells = [];
+  if (tetris.topOut) { for (let cell = 0; cell < 200; cell++) if (tetris.board[cell]) cells.push(cell); }
+  else for (const r of tetris.clearingRows) for (let c = 0; c < 10; c++) cells.push(r * 10 + c);
+  let k = 0;
+  for (const cell of cells) {
+    const r = (cell / 10) | 0, c = cell % 10;
+    patchPointInto(_tpv, c + 0.5, r + 0.5);
+    patchNormalInto(_tnv, BU0 + c, BV0 + r);
+    for (let n = 0; n < T.particleCount && k < TETRIS_PMAX; n++, k++) {
+      const k3 = k * 3, sp = 0.25 + Math.random() * 0.2;
+      tpPos[k3] = _tpv[0]; tpPos[k3 + 1] = _tpv[1]; tpPos[k3 + 2] = _tpv[2];
+      tpVel[k3]     = _tnv[0] * sp + (Math.random() - 0.5) * 0.08;
+      tpVel[k3 + 1] = _tnv[1] * sp + (Math.random() - 0.5) * 0.08;
+      tpVel[k3 + 2] = _tnv[2] * sp + (Math.random() - 0.5) * 0.08;
+      tpLife[k] = TETRIS_PLIFE;
+    }
+  }
+  for (; k < TETRIS_PMAX; k++) tpLife[k] = 0;  // retire the rest of the pool
+}
+function updateTetrisParticles(dt) {
+  if (!tetrisParticles) return;
+  let any = false;
+  for (let k = 0; k < TETRIS_PMAX; k++) {
+    if (tpLife[k] <= 0) { tpAlphaAttr.array[k] = 0; continue; }
+    any = true;
+    tpLife[k] -= dt;
+    const k3 = k * 3;
+    tpPos[k3] += tpVel[k3] * dt; tpPos[k3 + 1] += tpVel[k3 + 1] * dt; tpPos[k3 + 2] += tpVel[k3 + 2] * dt;
+    tpVel[k3] *= 0.98; tpVel[k3 + 1] *= 0.98; tpVel[k3 + 2] *= 0.98;
+    tpAlphaAttr.array[k] = Math.max(0, tpLife[k] / TETRIS_PLIFE) * 0.9;
+  }
+  if (any || dt === 0) {
+    tetrisParticles.geometry.attributes.position.needsUpdate = true;
+    tpAlphaAttr.needsUpdate = true;
+  }
+}
+
+let tetrisPrevState = 'falling';
+function updateTetrisFrame(clock, dt) {
   if (!tetrisMesh) return;
+  if (tetris.state === 'clearing' && tetrisPrevState !== 'clearing') spawnClearBurst();
+  tetrisPrevState = tetris.state;
   // Positions every frame — the sheet moves under the board.
   let vi = 0;
   for (let r = 0; r < 20; r++) {
@@ -991,13 +1103,15 @@ function updateTetrisFrame(clock) {
     }
   }
   tetrisMesh.geometry.attributes.position.needsUpdate = true;
-  // Colours only when the board changed.
-  if (tetris.dirty) {
-    writeTetrisColors();
+  // Colours when the board changed — and every frame of a clear (it animates).
+  if (tetris.dirty || tetris.state !== 'falling') {
+    writeTetrisColors(clock);
     tetris.dirty = false;
     tetrisMesh.geometry.attributes.aColor.needsUpdate = true;
   }
   tetrisMesh.material.uniforms.uFogDensity.value = CONFIG.palette.fog;
+  updateTetrisParticles(dt);
+  if (tetrisParticles) tetrisParticles.material.uniforms.uColor.value.set(CONFIG.palette.nodeHot);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1481,7 +1595,7 @@ function frame(now) {
   updatePositions(morphT, clock, gp);
   if (experiments.tetris.on) {                  // experiment rides the fresh positions
     if (!paused) tetris.step(clock);
-    updateTetrisFrame(clock);
+    updateTetrisFrame(clock, paused ? 0 : dt);
   }
   if (!paused) {                      // ease dust toward the (blended) target — no jumps
     // the tesseract target moves every frame; once it's folded, track it tightly so dust
@@ -1666,11 +1780,12 @@ window.addEventListener('pointerdown', (e) => {
 });
 addCorner(expBtn, () => expOpen);
 experiments.tetris.toggle = (on) => {
-  if (on && !tetrisMesh) initTetrisMesh();     // lazy — startup pays nothing for the experiment
+  if (on && !tetrisMesh) { initTetrisMesh(); if (!reduce) initTetrisParticles(); }  // lazy
   if (tetrisMesh) tetrisMesh.visible = on;
-  if (on) { tetris.reset(); tetris.lastTick = clock; }
+  if (tetrisParticles) tetrisParticles.visible = on;
+  if (on) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
   if (reduce) {                                // static path: draw one settled frame
-    if (on) { tetris.step(clock); updateTetrisFrame(clock); }
+    if (on) { tetris.step(clock); updateTetrisFrame(clock, 0); }
     renderReducedStatic();
   }
 };
