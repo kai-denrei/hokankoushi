@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="47c69656">
+<meta name="cb" content="bc65ef00">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #050807; }
@@ -881,6 +881,7 @@ function refreshTetrisColors() {   // 7 stations along the active ramp; piece ty
   if (window.__tetris) window.__tetris.dirty = true;
 }
 
+let tetrisMode = 'off';        // 'off' | 'auto' (zero-player) | 'play' (WASD / swipes)
 let tetrisMesh = null, tetrisPosArr = null, tetrisColArr = null;
 const _tpv = [0, 0, 0], _tnv = [0, 0, 0];
 
@@ -1302,6 +1303,7 @@ const tetris = {
   state: 'falling',          // 'falling' | 'clearing' (flash+dissolve) | 'collapsing'
   clearingRows: [], clearStart: 0, collapseStart: 0, topOut: false,
   lastTick: 0, dirty: true,
+  controlled: false,         // play mode: the player is the policy
   cellAt(c, r) { return (c < 0 || c >= 10 || r >= 20) ? 1 : (r < 0 ? 0 : this.board[r * 10 + c]); },
   fits(type, rot, col, row) {
     for (const [x, y] of TETRO[type][rot]) if (this.cellAt(col + x, row + y)) return false;
@@ -1353,10 +1355,59 @@ const tetris = {
   },
   spawn(clock) {
     const type = this.nextType();
+    if (this.controlled) {     // play mode: deal at the classic spawn, no planning
+      this.active = { type, rot: 0, col: 3, row: -2, targetCol: 3 };
+      return;
+    }
     const p = this.plan(type);
     if (!p) { this.beginTopOut(clock); return; }
     const col = this.fits(type, p.rot, 3, -2) ? 3 : p.col;   // classic spawn col, else start at target
     this.active = { type, rot: p.rot, col, row: -2, targetCol: p.col };
+  },
+  lock(clock) {              // shared by gravity, softDrop and hardDrop
+    const a = this.active;
+    let above = false;       // cells above the visible board = stack hit the ceiling
+    for (const [x, y] of TETRO[a.type][a.rot]) {
+      if (a.row + y < 0) { above = true; continue; }
+      this.board[(a.row + y) * 10 + a.col + x] = a.type;
+    }
+    this.active = null;
+    if (above) { this.beginTopOut(clock); return; }
+    const full = [];
+    for (let r = 0; r < 20; r++) { let f = true; for (let c = 0; c < 10; c++) if (!this.board[r * 10 + c]) { f = false; break; } if (f) full.push(r); }
+    if (full.length) { this.state = 'clearing'; this.clearingRows = full; this.clearStart = clock; }
+    this.dirty = true;
+  },
+  // Player inputs, all in board space — the board is lattice-fixed, so "down" is
+  // always board-down no matter how the sheet is folded. No-ops between pieces.
+  tryMove(dir) {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return false;
+    if (!this.fits(a.type, a.rot, a.col + dir, a.row)) return false;
+    a.col += dir; a.targetCol = a.col; this.dirty = true; return true;
+  },
+  tryRotate() {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return false;
+    const nr = (a.rot + 1) % TETRO[a.type].length;
+    for (const k of [0, -1, 1]) {          // simple wall kick
+      if (this.fits(a.type, nr, a.col + k, a.row)) {
+        a.rot = nr; a.col += k; a.targetCol = a.col; this.dirty = true; return true;
+      }
+    }
+    return false;
+  },
+  softDrop(clock) {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return;
+    if (this.fits(a.type, a.rot, a.col, a.row + 1)) { a.row++; this.lastTick = clock; this.dirty = true; }
+    else this.lock(clock);
+  },
+  hardDrop(clock) {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return;
+    while (this.fits(a.type, a.rot, a.col, a.row + 1)) a.row++;
+    this.lock(clock);
   },
   step(clock) {              // gravity/animation driver — called from frame() when on and !paused
     const T = CONFIG.tetris;
@@ -1382,23 +1433,12 @@ const tetris = {
     this.lastTick = clock;
     if (!this.active) { this.spawn(clock); this.dirty = true; return; }
     const a = this.active;
-    if (a.col !== a.targetCol) {               // move-then-fall toward the planned column
+    if (!this.controlled && a.col !== a.targetCol) {   // auto: drift toward the planned column
       const dir = a.targetCol > a.col ? 1 : -1;
       if (this.fits(a.type, a.rot, a.col + dir, a.row)) a.col += dir;
     }
     if (this.fits(a.type, a.rot, a.col, a.row + 1)) { a.row++; this.dirty = true; return; }
-    // lock — cells above the visible board mean the stack hit the ceiling
-    let above = false;
-    for (const [x, y] of TETRO[a.type][a.rot]) {
-      if (a.row + y < 0) { above = true; continue; }
-      this.board[(a.row + y) * 10 + a.col + x] = a.type;
-    }
-    this.active = null;
-    if (above) { this.beginTopOut(clock); return; }
-    const full = [];
-    for (let r = 0; r < 20; r++) { let f = true; for (let c = 0; c < 10; c++) if (!this.board[r * 10 + c]) { f = false; break; } if (f) full.push(r); }
-    if (full.length) { this.state = 'clearing'; this.clearingRows = full; this.clearStart = clock; }
-    this.dirty = true;
+    this.lock(clock);
   },
   reset() {
     this.board.fill(0); this.bag = []; this.active = null; this.state = 'falling';
@@ -1593,7 +1633,7 @@ function frame(now) {
 
   const _t0 = perfOn ? performance.now() : 0;   // QA-only: isolate CPU-JS from GPU
   updatePositions(morphT, clock, gp);
-  if (experiments.tetris.on) {                  // experiment rides the fresh positions
+  if (tetrisMode !== 'off') {                   // experiment rides the fresh positions
     if (!paused) tetris.step(clock);
     updateTetrisFrame(clock, paused ? 0 : dt);
   }
@@ -1650,6 +1690,24 @@ window.addEventListener('error', (e) => {
 // Input: h HUD, space pause, r reseed, 1–7 switch target.
 // ─────────────────────────────────────────────────────────────────────────────
 window.addEventListener('keydown', (e) => {
+  // Tetris play captures WASD + space (space = hard drop, so pause is unavailable
+  // until play is toggled off). Board-space: S is always board-down, however the
+  // sheet is folded. Key auto-repeat gives hold-to-repeat for A/D/S.
+  if (tetrisMode === 'play' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    const k = e.key === ' ' ? 'space' : e.key.toLowerCase();
+    if (k === 'w' || k === 'a' || k === 's' || k === 'd' || k === 'space') {
+      e.preventDefault();
+      if (!paused) {
+        if (k === 'a') tetris.tryMove(-1);
+        else if (k === 'd') tetris.tryMove(1);
+        else if (k === 'w') tetris.tryRotate();
+        else if (k === 's') tetris.softDrop(clock);
+        else tetris.hardDrop(clock);
+        if (reduce) { updateTetrisFrame(clock, 0); renderReducedStatic(); }
+      }
+      return;                          // space consumed — no pause toggle
+    }
+  }
   switch (e.key) {
     case 'h': hudOn = !hudOn; hud.classList.toggle('on', hudOn); break;
     case ' ': paused = !paused; e.preventDefault(); break;
@@ -1660,6 +1718,30 @@ window.addEventListener('keydown', (e) => {
   }
   if (reduce) renderReducedStatic();   // static path has no frame loop — repaint on change
 });
+
+// Tetris play, touch: horizontal swipe = move (1 col per ~40px), downward swipe =
+// hard drop, tap = rotate. Touches starting on UI (corners/menus/panel) pass through
+// so the corner tap-reveal keeps working. Board-space, like the keys.
+const overTetrisUI = (t) => !!(t.target && t.target.closest && t.target.closest('#gear, #panel, #nextBtn, #aboutBtn, #about, #exp, #expMenu'));
+let tetrisTouch = null;
+window.addEventListener('touchstart', (e) => {
+  if (tetrisMode !== 'play' || e.touches.length > 1 || overTetrisUI(e.touches[0])) { tetrisTouch = null; return; }
+  const t = e.touches[0];
+  tetrisTouch = { x: t.clientX, y: t.clientY };
+}, { passive: true });
+window.addEventListener('touchend', (e) => {
+  if (!tetrisTouch || tetrisMode !== 'play' || paused) { tetrisTouch = null; return; }
+  const t = e.changedTouches[0];
+  const dx = t.clientX - tetrisTouch.x, dy = t.clientY - tetrisTouch.y;
+  tetrisTouch = null;
+  if (Math.abs(dx) >= 30 && Math.abs(dx) >= Math.abs(dy)) {
+    const steps = Math.floor(Math.abs(dx) / 40) + 1, dir = dx > 0 ? 1 : -1;
+    for (let i = 0; i < steps; i++) if (!tetris.tryMove(dir)) break;
+  } else if (dy >= 30) tetris.hardDrop(clock);
+  else if (Math.abs(dx) < 12 && Math.abs(dy) < 12) tetris.tryRotate();
+  else return;                          // diagonal-ish / upward: no-op
+  if (reduce) { updateTetrisFrame(clock, 0); renderReducedStatic(); }
+}, { passive: true });
 
 function onResize() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, CONFIG.render.dprCap));
@@ -1752,9 +1834,12 @@ addCorner(aboutBtn, () => aboutOpen);
 addCorner(nextBtn, () => false);
 
 // Experiments registry — the bottom-left flask opens this menu. Each entry's
-// toggle(on) is installed by its own layer (tetris wires the real one below);
+// toggle(on) is installed by its own layer (tetris wires them below);
 // future experiments just add a row here.
-const experiments = { tetris: { label: 'tetris', on: false, toggle() {} } };
+const experiments = {
+  tetrisAuto: { label: 'tetris auto', on: false, toggle() {} },
+  tetrisPlay: { label: 'tetris play', on: false, toggle() {} },
+};
 const expBtn = document.getElementById('exp');
 const expMenu = document.getElementById('expMenu');
 let expOpen = false;
@@ -1779,21 +1864,36 @@ window.addEventListener('pointerdown', (e) => {
   if (expOpen && !(e.target.closest && e.target.closest('#exp, #expMenu'))) setExpOpen(false);
 });
 addCorner(expBtn, () => expOpen);
-experiments.tetris.toggle = (on) => {
+// Auto and Play are two faces of one layer: mutually exclusive rows, and the
+// board CARRIES OVER on a mode switch (one continuous game — only the policy
+// changes hands). Fresh enable from fully-off starts clean.
+function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
+  const wasOff = tetrisMode === 'off';
+  tetrisMode = mode;
+  experiments.tetrisAuto.on = mode === 'auto';
+  experiments.tetrisPlay.on = mode === 'play';
+  if (expOpen) renderExpMenu();                // reflect the exclusive switch live
+  const on = mode !== 'off';
   if (on && !tetrisMesh) { initTetrisMesh(); if (!reduce) initTetrisParticles(); }  // lazy
   if (tetrisMesh) tetrisMesh.visible = on;
   if (tetrisParticles) tetrisParticles.visible = on;
-  if (on) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
-  if (reduce) {                                // static path: draw one settled mid-game frame
-    if (on) {
+  tetris.controlled = mode === 'play';
+  if (on && wasOff) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
+  if (reduce) {                                // static path: draw one settled frame
+    if (on && wasOff && mode === 'auto') {
       // No frame loop, so fast-forward with synthetic 1s ticks: a few pieces
-      // fall, lock and stack, then render that state once.
+      // fall, lock and stack, then render that state once. (Play mode starts
+      // clean and moves only on player input.)
       for (let i = 1; i <= 60; i++) tetris.step(clock + i);
-      updateTetrisFrame(clock + 61, 0);
     }
+    if (mode === 'play' && !tetris.active) tetris.step(clock + 1);   // deal the first piece
+
+    if (on) updateTetrisFrame(clock + 61, 0);
     renderReducedStatic();
   }
-};
+}
+experiments.tetrisAuto.toggle = (on) => setTetrisMode(on ? 'auto' : 'off');
+experiments.tetrisPlay.toggle = (on) => setTetrisMode(on ? 'play' : 'off');
 window.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') return;
   for (const hs of hotspots) hs.target = smoothstep(240, 70, Math.hypot(e.clientX - hs.anchor.x, e.clientY - hs.anchor.y));
