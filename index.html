@@ -1302,6 +1302,7 @@ const tetris = {
   state: 'falling',          // 'falling' | 'clearing' (flash+dissolve) | 'collapsing'
   clearingRows: [], clearStart: 0, collapseStart: 0, topOut: false,
   lastTick: 0, dirty: true,
+  controlled: false,         // play mode: the player is the policy
   cellAt(c, r) { return (c < 0 || c >= 10 || r >= 20) ? 1 : (r < 0 ? 0 : this.board[r * 10 + c]); },
   fits(type, rot, col, row) {
     for (const [x, y] of TETRO[type][rot]) if (this.cellAt(col + x, row + y)) return false;
@@ -1353,10 +1354,59 @@ const tetris = {
   },
   spawn(clock) {
     const type = this.nextType();
+    if (this.controlled) {     // play mode: deal at the classic spawn, no planning
+      this.active = { type, rot: 0, col: 3, row: -2, targetCol: 3 };
+      return;
+    }
     const p = this.plan(type);
     if (!p) { this.beginTopOut(clock); return; }
     const col = this.fits(type, p.rot, 3, -2) ? 3 : p.col;   // classic spawn col, else start at target
     this.active = { type, rot: p.rot, col, row: -2, targetCol: p.col };
+  },
+  lock(clock) {              // shared by gravity, softDrop and hardDrop
+    const a = this.active;
+    let above = false;       // cells above the visible board = stack hit the ceiling
+    for (const [x, y] of TETRO[a.type][a.rot]) {
+      if (a.row + y < 0) { above = true; continue; }
+      this.board[(a.row + y) * 10 + a.col + x] = a.type;
+    }
+    this.active = null;
+    if (above) { this.beginTopOut(clock); return; }
+    const full = [];
+    for (let r = 0; r < 20; r++) { let f = true; for (let c = 0; c < 10; c++) if (!this.board[r * 10 + c]) { f = false; break; } if (f) full.push(r); }
+    if (full.length) { this.state = 'clearing'; this.clearingRows = full; this.clearStart = clock; }
+    this.dirty = true;
+  },
+  // Player inputs, all in board space — the board is lattice-fixed, so "down" is
+  // always board-down no matter how the sheet is folded. No-ops between pieces.
+  tryMove(dir) {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return false;
+    if (!this.fits(a.type, a.rot, a.col + dir, a.row)) return false;
+    a.col += dir; a.targetCol = a.col; this.dirty = true; return true;
+  },
+  tryRotate() {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return false;
+    const nr = (a.rot + 1) % TETRO[a.type].length;
+    for (const k of [0, -1, 1]) {          // simple wall kick
+      if (this.fits(a.type, nr, a.col + k, a.row)) {
+        a.rot = nr; a.col += k; a.targetCol = a.col; this.dirty = true; return true;
+      }
+    }
+    return false;
+  },
+  softDrop(clock) {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return;
+    if (this.fits(a.type, a.rot, a.col, a.row + 1)) { a.row++; this.lastTick = clock; this.dirty = true; }
+    else this.lock(clock);
+  },
+  hardDrop(clock) {
+    const a = this.active;
+    if (!a || this.state !== 'falling') return;
+    while (this.fits(a.type, a.rot, a.col, a.row + 1)) a.row++;
+    this.lock(clock);
   },
   step(clock) {              // gravity/animation driver — called from frame() when on and !paused
     const T = CONFIG.tetris;
@@ -1382,23 +1432,12 @@ const tetris = {
     this.lastTick = clock;
     if (!this.active) { this.spawn(clock); this.dirty = true; return; }
     const a = this.active;
-    if (a.col !== a.targetCol) {               // move-then-fall toward the planned column
+    if (!this.controlled && a.col !== a.targetCol) {   // auto: drift toward the planned column
       const dir = a.targetCol > a.col ? 1 : -1;
       if (this.fits(a.type, a.rot, a.col + dir, a.row)) a.col += dir;
     }
     if (this.fits(a.type, a.rot, a.col, a.row + 1)) { a.row++; this.dirty = true; return; }
-    // lock — cells above the visible board mean the stack hit the ceiling
-    let above = false;
-    for (const [x, y] of TETRO[a.type][a.rot]) {
-      if (a.row + y < 0) { above = true; continue; }
-      this.board[(a.row + y) * 10 + a.col + x] = a.type;
-    }
-    this.active = null;
-    if (above) { this.beginTopOut(clock); return; }
-    const full = [];
-    for (let r = 0; r < 20; r++) { let f = true; for (let c = 0; c < 10; c++) if (!this.board[r * 10 + c]) { f = false; break; } if (f) full.push(r); }
-    if (full.length) { this.state = 'clearing'; this.clearingRows = full; this.clearStart = clock; }
-    this.dirty = true;
+    this.lock(clock);
   },
   reset() {
     this.board.fill(0); this.bag = []; this.active = null; this.state = 'falling';
