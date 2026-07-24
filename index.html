@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="47c69656">
+<meta name="cb" content="bc65ef00">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #050807; }
@@ -1886,6 +1886,8 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
       // clean and moves only on player input.)
       for (let i = 1; i <= 60; i++) tetris.step(clock + i);
     }
+    if (mode === 'play' && !tetris.active) tetris.step(clock + 1);   // deal the first piece
+
     if (on) updateTetrisFrame(clock + 61, 0);
     renderReducedStatic();
   }

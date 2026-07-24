@@ -20,10 +20,14 @@ map. One `CONFIG` object drives every visual.
 - Pointer interaction: cursor light, click ripples (damped waves), camera parallax.
 - Scientific colormaps (viridis / inferno / magma / turbo) for the node colour ramp.
 - Four proximity-revealed corner affordances (controls, explanation, next shape, experiments).
-- **Experimental (bottom-left flask):** zero-player Tetris on a 10×20 patch of the lattice —
-  pieces fall along the surface, deform with every fold, and cleared lines flash, dissolve and
-  burst particles off the sheet. Nobody is playing; a deliberately imperfect greedy policy keeps
-  the stack breathing. Fake SOM, meet fake Tetris.
+- **Experimental (bottom-left flask):** Tetris on a 10×20 patch of the lattice — pieces fall
+  along the surface, deform with every fold, and cleared lines flash, dissolve and burst
+  particles off the sheet. **tetris auto** plays itself (a deliberately imperfect greedy policy
+  keeps the stack breathing — fake SOM, meet fake Tetris); **tetris play** hands you the stick:
+  `W` rotate · `A`/`D` move · `S` soft drop · `space` hard drop (all board-space — S is always
+  board-down no matter how the sheet is folded; space returns to pause when play is off). On
+  touch: swipe left/right to move, swipe down to drop, tap to rotate. The board carries over
+  when switching modes.
 - A live control panel (Tweakpane) bound to `CONFIG`; `prefers-reduced-motion` renders a static
   folded frame.
 
