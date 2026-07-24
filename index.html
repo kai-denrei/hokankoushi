@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="d649f52b">
+<meta name="cb" content="5360ceff">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -23,6 +23,11 @@
     transition: opacity .12s; letter-spacing: .3px;
   }
   #hud.on { opacity: .85; }
+  /* Tetris line-clear score — 3×5 pixel digits, top-left, over the canvas. */
+  #score { position: fixed; top: 14px; left: 14px; z-index: 15; display: none;
+           pointer-events: none; filter: drop-shadow(0 0 6px rgba(0,0,0,.55)); }
+  #score.on { display: block; }
+  body.score-on #hud { top: 60px; }   /* debug HUD steps aside while the score shows */
   /* Boot status probe — used only by the offline self-test, never shown. */
   #status { position: fixed; left: -9999px; top: -9999px; }
 
@@ -122,6 +127,7 @@
 </style>
 
 <canvas id="c"></canvas>
+<canvas id="score"></canvas>
 <div id="hud"></div>
 <div id="status">boot</div>
 
@@ -1102,6 +1108,44 @@ function updateTetrisParticles(dt) {
   }
 }
 
+// Line-clear score — 3×5 pixel digits (operator font) on a tiny 2D canvas,
+// top-left. Repainted only when the value changes; visible while tetris is on.
+const SCORE_FONT = {
+  '0': ['###','#.#','#.#','#.#','###'],
+  '1': ['.#.','.#.','.#.','.#.','.#.'],
+  '2': ['###','..#','###','#..','###'],
+  '3': ['###','..#','###','..#','###'],
+  '4': ['#.#','#.#','###','..#','..#'],
+  '5': ['###','#..','###','..#','###'],
+  '6': ['###','#..','###','#.#','###'],
+  '7': ['###','..#','..#','..#','..#'],
+  '8': ['###','#.#','###','#.#','###'],
+  '9': ['###','#.#','###','..#','###'],
+};
+const scoreEl = document.getElementById('score');
+const scoreCtx = scoreEl.getContext('2d');
+let scoreDrawn = -1;
+function drawScore(n) {
+  scoreDrawn = n;
+  const px = 4, gap = 1, dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const s = String(n);
+  const dw = 3 * px + 2 * gap, sp = px + gap;                 // digit width, digit spacing
+  const w = s.length * dw + (s.length - 1) * sp, h = 5 * px + 4 * gap;
+  scoreEl.width = w * dpr; scoreEl.height = h * dpr;
+  scoreEl.style.width = w + 'px'; scoreEl.style.height = h + 'px';
+  scoreCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  scoreCtx.clearRect(0, 0, w, h);
+  scoreCtx.fillStyle = 'rgba(255, 233, 163, 0.85)';           // sparkle amber
+  let x0 = 0;
+  for (const ch of s) {
+    const g = SCORE_FONT[ch];
+    for (let r = 0; r < 5; r++)
+      for (let c = 0; c < 3; c++)
+        if (g[r][c] === '#') scoreCtx.fillRect(x0 + c * (px + gap), r * (px + gap), px, px);
+    x0 += dw + sp;
+  }
+}
+
 let tetrisPrevState = 'falling';
 function updateTetrisFrame(clock, dt) {
   if (!tetrisMesh) return;
@@ -1134,6 +1178,7 @@ function updateTetrisFrame(clock, dt) {
   tetrisMesh.material.uniforms.uFogDensity.value = CONFIG.palette.fog;
   updateTetrisParticles(dt);
   if (tetrisParticles) tetrisParticles.material.uniforms.uColor.value.set(CONFIG.palette.nodeHot);
+  if (tetris.lines !== scoreDrawn) drawScore(tetris.lines);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1324,6 +1369,7 @@ const tetris = {
   state: 'falling',          // 'falling' | 'clearing' (flash+dissolve) | 'collapsing'
   clearingRows: [], clearStart: 0, collapseStart: 0, topOut: false,
   lastTick: 0, dirty: true,
+  lines: 0,                  // cleared-lines odometer (score display, both modes)
   controlled: false,         // play mode: the player is the policy
   cellAt(c, r) { return (c < 0 || c >= 10 || r >= 20) ? 1 : (r < 0 ? 0 : this.board[r * 10 + c]); },
   fits(type, rot, col, row) {
@@ -1396,7 +1442,7 @@ const tetris = {
     if (above) { this.beginTopOut(clock); return; }
     const full = [];
     for (let r = 0; r < 20; r++) { let f = true; for (let c = 0; c < 10; c++) if (!this.board[r * 10 + c]) { f = false; break; } if (f) full.push(r); }
-    if (full.length) { this.state = 'clearing'; this.clearingRows = full; this.clearStart = clock; }
+    if (full.length) { this.lines += full.length; this.state = 'clearing'; this.clearingRows = full; this.clearStart = clock; }
     this.dirty = true;
   },
   // Player inputs, all in board space — the board is lattice-fixed, so "down" is
@@ -1463,7 +1509,7 @@ const tetris = {
   },
   reset() {
     this.board.fill(0); this.bag = []; this.active = null; this.state = 'falling';
-    this.clearingRows = []; this.topOut = false; this.dirty = true;
+    this.clearingRows = []; this.topOut = false; this.lines = 0; this.dirty = true;
   },
 };
 window.__tetris = tetris;    // QA hook (headless harness + Playwright)
@@ -1928,6 +1974,9 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
   if (tetrisParticles) tetrisParticles.visible = on;
   tetris.controlled = mode === 'play';
   if (on && wasOff) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
+  scoreEl.classList.toggle('on', on);          // line-clear odometer rides with the game
+  document.body.classList.toggle('score-on', on);
+  if (on) drawScore(tetris.lines);
   if (reduce) {                                // static path: draw one settled frame
     if (on && wasOff && mode === 'auto') {
       // No frame loop, so fast-forward with synthetic 1s ticks: a few pieces
