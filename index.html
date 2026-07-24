@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="9fd5e548">
+<meta name="cb" content="d649f52b">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -341,8 +341,10 @@ const CONFIG = {
     collapseMs: 200,       // rows above glide down along the surface
     particleCount: 6,      // burst particles per cleared cell (0 disables)
     dimStack: 0.55,        // settled-stack brightness vs the falling piece
-    flatHoldS: 6,          // play mode: rest at flat this long (ambient uses morph.holdFlat)
+    flatHoldS: 12,         // play mode: rest at flat this long (ambient uses morph.holdFlat)
     playFlatTilt: 0.45,    // play mode: sheet lean toward the viewer during the flat beat (rad)
+    playTimeScale: 2.0,    // play mode: fold/unfold speed multiplier (shapes pass faster)
+    holdFoldedS: 2,        // play mode: seconds at full fold (ambient uses morph.holdFolded)
   },
 };
 
@@ -1537,12 +1539,17 @@ function updateSkip() {
 }
 function advanceTimeline(dt) {
   const m = CONFIG.morph;
+  // Play mode: shapes come and go faster (dt scaled through fold/unfold, so
+  // morphT/gp semantics are untouched) and the folded hold is shorter — the
+  // readable flat window is where the player gets a fighting chance.
+  const play = tetrisMode === 'play';
+  const mdt = play ? dt * CONFIG.tetris.playTimeScale : dt;
   if (phase === 'fold') {
-    morphT += dt;
+    morphT += mdt;
     if (morphT >= m.duration) { morphT = m.duration; phase = 'hold'; holdT = 0; }
   } else if (phase === 'hold') {
     holdT += dt;
-    if (holdT >= m.holdFolded) {
+    if (holdT >= (play ? CONFIG.tetris.holdFoldedS : m.holdFolded)) {
       if (m.loopMode === 'reverse' || m.loopMode === 'tour') { phase = 'unfold'; }
       else if (m.loopMode === 'nextTarget') {
         let ni = TARGET_NAMES.indexOf(currentTarget);
@@ -1554,7 +1561,7 @@ function advanceTimeline(dt) {
       } else { morphT = 0; phase = 'fold'; resetTrail(); newSeed(); } // restart
     }
   } else if (phase === 'unfold') {
-    morphT -= dt;
+    morphT -= mdt;
     if (morphT <= 0) { morphT = 0; phase = 'holdFlat'; holdT = 0; }
   } else if (phase === 'holdFlat') {                 // rest at flat (the "flat space" beat)
     holdT += dt;
@@ -2081,8 +2088,10 @@ function buildBindings(p) {
   tet.addBinding(CONFIG.tetris, 'clearFlashMs', { min: 0, max: 1500, step: 10, label: 'flash ms' });
   tet.addBinding(CONFIG.tetris, 'dissolveMs', { min: 0, max: 1500, step: 10, label: 'dissolve ms' });
   tet.addBinding(CONFIG.tetris, 'collapseMs', { min: 0, max: 1500, step: 10, label: 'collapse ms' });
-  tet.addBinding(CONFIG.tetris, 'flatHoldS', { min: 1, max: 20, step: 0.5, label: 'flat hold s' });
+  tet.addBinding(CONFIG.tetris, 'flatHoldS', { min: 1, max: 30, step: 0.5, label: 'flat hold s' });
   tet.addBinding(CONFIG.tetris, 'playFlatTilt', { min: 0.15, max: 0.9, step: 0.01, label: 'flat lean' });
+  tet.addBinding(CONFIG.tetris, 'playTimeScale', { min: 1, max: 4, step: 0.1, label: 'fold speed ×' });
+  tet.addBinding(CONFIG.tetris, 'holdFoldedS', { min: 0, max: 10, step: 0.5, label: 'fold hold s' });
 
   p.addButton({ title: 'reseed' }).on('click', () => {
     if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; }   // cancel an in-flight skip morph
