@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="5360ceff">
+<meta name="cb" content="6d382fb1">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -23,11 +23,6 @@
     transition: opacity .12s; letter-spacing: .3px;
   }
   #hud.on { opacity: .85; }
-  /* Tetris line-clear score — 3×5 pixel digits, top-left, over the canvas. */
-  #score { position: fixed; top: 14px; left: 14px; z-index: 15; display: none;
-           pointer-events: none; filter: drop-shadow(0 0 6px rgba(0,0,0,.55)); }
-  #score.on { display: block; }
-  body.score-on #hud { top: 60px; }   /* debug HUD steps aside while the score shows */
   /* Boot status probe — used only by the offline self-test, never shown. */
   #status { position: fixed; left: -9999px; top: -9999px; }
 
@@ -127,7 +122,6 @@
 </style>
 
 <canvas id="c"></canvas>
-<canvas id="score"></canvas>
 <div id="hud"></div>
 <div id="status">boot</div>
 
@@ -891,6 +885,7 @@ function refreshTetrisColors() {   // 7 stations along the active ramp; piece ty
   PIECE_RGB = [null];
   for (let t = 1; t <= 7; t++) PIECE_RGB.push(cmapJS(CONFIG.palette.colormap, t / 8));
   if (window.__tetris) window.__tetris.dirty = true;
+  scoreDrawn = -1;                 // score digits repaint in the new palette too
 }
 
 let tetrisMode = 'off';        // 'off' | 'auto' (zero-player) | 'play' (WASD / swipes)
@@ -912,8 +907,8 @@ function updateTetrisStage() {
 }
 const _tpv = [0, 0, 0], _tnv = [0, 0, 0];
 
-function patchPointInto(out, pu, pv) {  // patch coords; both axes may be fractional
-  const uf = BU0 + pu, vf = BV0 + pv;
+function patchPointInto(out, pu, pv, ou = BU0, ov = BV0) {  // patch coords (fractional ok)
+  const uf = ou + pu, vf = ov + pv;
   const u0 = Math.floor(uf), fu = uf - u0, v0 = Math.floor(vf), fv = vf - v0;
   const i00 = (v0 * COLS + u0) * 3, i10 = i00 + 3;
   const i01 = ((v0 + 1) * COLS + u0) * 3, i11 = i01 + 3;
@@ -1108,8 +1103,11 @@ function updateTetrisParticles(dt) {
   }
 }
 
-// Line-clear score — 3×5 pixel digits (operator font) on a tiny 2D canvas,
-// top-left. Repainted only when the value changes; visible while tetris is on.
+// Line-clear score — 3×5 pixel digits (operator font) lit ON THE SHEET: a
+// lattice patch at the top-left (SU0, SV0) whose cells light up as digit
+// pixels, deforming with every fold exactly like the board. Up to 4 digits
+// (3 columns + 1 gap each), display clamped at 9999. Shares the board mesh's
+// material; repainted only when the count (or palette) changes.
 const SCORE_FONT = {
   '0': ['###','#.#','#.#','#.#','###'],
   '1': ['.#.','.#.','.#.','.#.','.#.'],
@@ -1122,28 +1120,73 @@ const SCORE_FONT = {
   '8': ['###','#.#','###','#.#','###'],
   '9': ['###','#.#','###','..#','###'],
 };
-const scoreEl = document.getElementById('score');
-const scoreCtx = scoreEl.getContext('2d');
-let scoreDrawn = -1;
-function drawScore(n) {
-  scoreDrawn = n;
-  const px = 4, gap = 1, dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const s = String(n);
-  const dw = 3 * px + 2 * gap, sp = px + gap;                 // digit width, digit spacing
-  const w = s.length * dw + (s.length - 1) * sp, h = 5 * px + 4 * gap;
-  scoreEl.width = w * dpr; scoreEl.height = h * dpr;
-  scoreEl.style.width = w + 'px'; scoreEl.style.height = h + 'px';
-  scoreCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  scoreCtx.clearRect(0, 0, w, h);
-  scoreCtx.fillStyle = 'rgba(255, 233, 163, 0.85)';           // sparkle amber
-  let x0 = 0;
+const SU0 = 2, SV0 = 2, SCORE_COLS = 15, SCORE_ROWS = 5;   // top-left patch, 4 digits max
+let scoreMesh = null, scorePosArr = null, scoreColArr = null, scoreDrawn = -1;
+function initScoreMesh() {                   // mirrors initTetrisMesh; shares its material
+  const cells = SCORE_COLS * SCORE_ROWS;
+  scorePosArr = new Float32Array(cells * 4 * 3);
+  scoreColArr = new Float32Array(cells * 4 * 4);
+  const idx = [];
+  for (let cell = 0; cell < cells; cell++) {
+    const b = cell * 4;
+    idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setIndex(idx);
+  const pa = new THREE.BufferAttribute(scorePosArr, 3); pa.setUsage(THREE.DynamicDrawUsage);
+  const ca = new THREE.BufferAttribute(scoreColArr, 4); ca.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pa);
+  g.setAttribute('aColor', ca);
+  scoreMesh = new THREE.Mesh(g, tetrisMesh.material);
+  scoreMesh.frustumCulled = false;
+  scoreMesh.renderOrder = 2;
+  scoreMesh.visible = false;
+  scene.add(scoreMesh);
+}
+function writeScoreColors() {
+  scoreDrawn = tetris.lines;
+  const s = String(Math.min(tetris.lines, 9999));
+  const lit = new Set();
+  let x = 0;
   for (const ch of s) {
+    if (x + 3 > SCORE_COLS) break;
     const g = SCORE_FONT[ch];
     for (let r = 0; r < 5; r++)
       for (let c = 0; c < 3; c++)
-        if (g[r][c] === '#') scoreCtx.fillRect(x0 + c * (px + gap), r * (px + gap), px, px);
-    x0 += dw + sp;
+        if (g[r][c] === '#') lit.add(r * SCORE_COLS + x + c);
+    x += 4;                                  // 3 columns + 1 gap
   }
+  const col = new THREE.Color(CONFIG.palette.nodeHot);
+  for (let cell = 0; cell < SCORE_COLS * SCORE_ROWS; cell++) {
+    const on = lit.has(cell), b = cell * 16;
+    for (let k = 0; k < 4; k++) {
+      scoreColArr[b + k * 4]     = col.r;
+      scoreColArr[b + k * 4 + 1] = col.g;
+      scoreColArr[b + k * 4 + 2] = col.b;
+      scoreColArr[b + k * 4 + 3] = on ? 0.92 : 0;
+    }
+  }
+  scoreMesh.geometry.attributes.aColor.needsUpdate = true;
+}
+function updateScoreFrame() {
+  if (!scoreMesh) return;
+  let vi = 0;                                // positions every frame — the sheet moves
+  for (let r = 0; r < SCORE_ROWS; r++) {
+    for (let c = 0; c < SCORE_COLS; c++) {
+      for (let k = 0; k < 4; k++) {
+        const pu = c + (k & 1), pv = r + (k >> 1);
+        patchPointInto(_tpv, pu, pv, SU0, SV0);
+        patchNormalInto(_tnv, SU0 + pu, SV0 + pv);
+        const o = vi * 3;
+        scorePosArr[o]     = _tpv[0] + _tnv[0] * TETRIS_LIFT;
+        scorePosArr[o + 1] = _tpv[1] + _tnv[1] * TETRIS_LIFT;
+        scorePosArr[o + 2] = _tpv[2] + _tnv[2] * TETRIS_LIFT;
+        vi++;
+      }
+    }
+  }
+  scoreMesh.geometry.attributes.position.needsUpdate = true;
+  if (tetris.lines !== scoreDrawn) writeScoreColors();
 }
 
 let tetrisPrevState = 'falling';
@@ -1178,7 +1221,7 @@ function updateTetrisFrame(clock, dt) {
   tetrisMesh.material.uniforms.uFogDensity.value = CONFIG.palette.fog;
   updateTetrisParticles(dt);
   if (tetrisParticles) tetrisParticles.material.uniforms.uColor.value.set(CONFIG.palette.nodeHot);
-  if (tetris.lines !== scoreDrawn) drawScore(tetris.lines);
+  updateScoreFrame();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1974,9 +2017,8 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
   if (tetrisParticles) tetrisParticles.visible = on;
   tetris.controlled = mode === 'play';
   if (on && wasOff) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
-  scoreEl.classList.toggle('on', on);          // line-clear odometer rides with the game
-  document.body.classList.toggle('score-on', on);
-  if (on) drawScore(tetris.lines);
+  if (on && !scoreMesh) initScoreMesh();       // line-clear odometer, lit on the sheet
+  if (scoreMesh) { scoreMesh.visible = on; scoreDrawn = -1; }
   if (reduce) {                                // static path: draw one settled frame
     if (on && wasOff && mode === 'auto') {
       // No frame loop, so fast-forward with synthetic 1s ticks: a few pieces
