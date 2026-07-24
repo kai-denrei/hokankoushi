@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="a6523910">
+<meta name="cb" content="c89abf1f">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -354,8 +354,8 @@ const CONFIG = {
     playFlatTilt: 0.45,    // play mode: sheet lean toward the viewer during the flat beat (rad)
     playTimeScale: 2.0,    // play mode: fold/unfold speed multiplier (shapes pass faster)
     holdFoldedS: 2,        // play mode: seconds at full fold (ambient uses morph.holdFolded)
-    trackStrength: 0.85,   // play mode: how hard the camera homes to the board (0 = free orbit)
-    lookAtBias: 0.25,      // play mode: lerp of camera target toward the board centroid
+    trackRate: 0.08,       // play mode: max extra rad/s the camera drifts toward the board (0 = off)
+    lookAtBias: 0.15,      // play mode: lerp of camera target toward the (smoothed) board centroid
   },
 };
 
@@ -913,10 +913,16 @@ let tetrisMesh = null, tetrisPosArr = null, tetrisColArr = null;
 // the flat sheet turns toward the player like a board on a stand, then hands
 // back to the ambient orbit as the next fold starts. No snaps either way.
 let tetrisStageW = 0, tetrisBuiltTilt = null;
-// Board-tracking: the play camera homes toward the board's live position so the
-// key area rides near screen center instead of drifting behind the shape.
-let tetrisTrackW = 0;
+// Board-tracking: a SLIGHT bias, not a forced angle. The board direction is
+// low-pass filtered in vector space (sign flips glide through zero instead of
+// jumping the bearing), and a tracking offset creeps toward it at a rate-
+// limited crawl — camera angular velocity is bounded by orbitSpeed + trackRate,
+// so the ambient character survives and staccato is impossible by construction.
+let tetrisTrackW = 0;                        // eased gate: play & folding phases
+let tetrisTrackOff = 0;                      // rad added to the orbit angle (servo output)
 const tetrisBoardC = [0, 0, 0], tetrisBoardN = [0, 0, 1];
+const tetrisDirSm = [0, 0, 1];               // low-passed board direction (centroid + normal)
+const tetrisLookSm = [0, 0, 0];              // low-passed centroid for the look-at bias
 function updateTetrisBoardFrame() {          // centroid + mean normal of the board patch
   let cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
   for (const pv of [2, 10, 18]) {
@@ -933,18 +939,39 @@ function updateTetrisBoardFrame() {          // centroid + mean normal of the bo
   // parameterizations can't cancel the bearing
   const s = (nx * cx + ny * cy + nz * cz) < 0 ? -1 : 1;
   tetrisBoardN[0] = s * nx / nl; tetrisBoardN[1] = s * ny / nl; tetrisBoardN[2] = s * nz / nl;
+  for (let c = 0; c < 3; c++) {              // vector-space low-pass (τ ≈ 0.8 s at 60 fps)
+    tetrisDirSm[c] += (tetrisBoardC[c] + tetrisBoardN[c] - tetrisDirSm[c]) * 0.02;
+    tetrisLookSm[c] += (tetrisBoardC[c] - tetrisLookSm[c]) * 0.02;
+  }
 }
-function updateTetrisStage() {
+function updateTetrisStage(dt) {
   const target = (tetrisMode === 'play' && phase === 'holdFlat') ? 1 : 0;
   tetrisStageW += (target - tetrisStageW) * 0.05;
   if (target === 0 && tetrisStageW < 1e-3) tetrisStageW = 0;
-  const trackTarget = (tetrisMode === 'play' && phase !== 'holdFlat') ? CONFIG.tetris.trackStrength : 0;
-  tetrisTrackW += (trackTarget - tetrisTrackW) * 0.04;
-  if (trackTarget === 0 && tetrisTrackW < 1e-3) tetrisTrackW = 0;
+  const trackOn = tetrisMode === 'play' && phase !== 'holdFlat';
+  tetrisTrackW += ((trackOn ? 1 : 0) - tetrisTrackW) * 0.04;
+  if (!trackOn && tetrisTrackW < 1e-3) tetrisTrackW = 0;
+  // One rate-limited servo owns ALL play-mode azimuth bias (fold tracking AND the
+  // flat-beat frontal pan) — |d(offset)/dt| is hard-capped, so whatever the target
+  // does, the camera can only glide. Off / ambient: the offset relaxes to 0.
+  const ang = clock * CONFIG.camera.orbitSpeed;
+  let want = 0, rate = 0.35;                 // relax / frontal pan: gentle cinematic cap
+  if (tetrisMode === 'play' && phase === 'holdFlat') {
+    want = Math.atan2(Math.sin(-ang), Math.cos(-ang));           // frontal vantage
+  } else if (tetrisMode === 'play') {
+    const bx = tetrisDirSm[0], bz = tetrisDirSm[2];
+    if (bx * bx + bz * bz > 1e-4) {          // straight-overhead: leave the orbit be
+      want = Math.atan2(Math.sin(Math.atan2(bx, bz) - ang), Math.cos(Math.atan2(bx, bz) - ang));
+      rate = CONFIG.tetris.trackRate;        // board bias: a slow creep
+    }
+  }
+  const maxStep = rate * dt;
+  const d = want - tetrisTrackOff;
+  tetrisTrackOff += Math.max(-maxStep, Math.min(maxStep, d));
   const base = CONFIG.lattice.flatTilt;
   if (tetrisBuiltTilt === null) tetrisBuiltTilt = base;
-  const want = base + (CONFIG.tetris.playFlatTilt - base) * tetrisStageW;
-  if (Math.abs(want - tetrisBuiltTilt) > 1e-4) { buildFlat(want); tetrisBuiltTilt = want; }
+  const wantTilt = base + (CONFIG.tetris.playFlatTilt - base) * tetrisStageW;
+  if (Math.abs(wantTilt - tetrisBuiltTilt) > 1e-4) { buildFlat(wantTilt); tetrisBuiltTilt = wantTilt; }
 }
 const _tpv = [0, 0, 0], _tnv = [0, 0, 0];
 
@@ -1754,19 +1781,9 @@ const BOB_FREQ = 0.6;   // fixed, independent of orbitSpeed
 function updateCamera(clock, gp) {
   const c = CONFIG.camera;
   const ang = clock * c.orbitSpeed;
-  let angUsed = ang;
-  if (tetrisStageW > 1e-3) {           // play flat beat: home to the frontal vantage
-    const wrap = Math.atan2(Math.sin(-ang), Math.cos(-ang));   // shortest arc to ang ≡ 0 (mod 2π)
-    angUsed = ang + wrap * tetrisStageW;
-  }
-  if (tetrisTrackW > 1e-3) {           // play fold phases: home to the board's bearing
-    const bx = tetrisBoardC[0] + tetrisBoardN[0], bz = tetrisBoardC[2] + tetrisBoardN[2];
-    if (bx * bx + bz * bz > 1e-4) {    // degenerate straight-overhead case: leave the orbit be
-      const thb = Math.atan2(bx, bz);
-      const wrap = Math.atan2(Math.sin(thb - angUsed), Math.cos(thb - angUsed));
-      angUsed += wrap * tetrisTrackW;
-    }
-  }
+  // All play-mode azimuth bias (frontal pan + board tracking) arrives through the
+  // rate-limited tetrisTrackOff servo — never a position-domain swing.
+  const angUsed = ang + tetrisTrackOff;
   const R = c.distance * (1 - c.driftIn * gp);
   // orbitSpeed = 0 → fully static (both orbit angle and bob freeze); driftIn is separate.
   const bob = c.orbitSpeed > 0 ? Math.sin(clock * BOB_FREQ) * c.orbitTiltAmp : 0;
@@ -1774,7 +1791,7 @@ function updateCamera(clock, gp) {
   const pxl = CONFIG.mouse.parallax;                 // gentle pointer parallax
   if (pxl > 0) { camera.position.x += mpx * pxl * 0.5; camera.position.y += mpy * pxl * 0.5; }
   const lw = Math.max(tetrisStageW, tetrisTrackW) * CONFIG.tetris.lookAtBias;
-  camera.lookAt(tetrisBoardC[0] * lw, tetrisBoardC[1] * lw, tetrisBoardC[2] * lw);
+  camera.lookAt(tetrisLookSm[0] * lw, tetrisLookSm[1] * lw, tetrisLookSm[2] * lw);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1882,7 +1899,7 @@ function frame(now) {
     mpx += (tpx - mpx) * 0.06;
     mpy += (tpy - mpy) * 0.06;
   }
-  updateTetrisStage();                // ease the play flat-beat framing before the camera reads it
+  updateTetrisStage(dt);              // ease the play framing before the camera reads it
   updateCamera(clock, gp);
   updateHud(gp);
   const _t1 = perfOn ? performance.now() : 0;
@@ -2284,7 +2301,7 @@ function buildBindings(p) {
   tet.addBinding(CONFIG.tetris, 'playFlatTilt', { min: 0.15, max: 0.9, step: 0.01, label: 'flat lean' });
   tet.addBinding(CONFIG.tetris, 'playTimeScale', { min: 1, max: 4, step: 0.1, label: 'fold speed ×' });
   tet.addBinding(CONFIG.tetris, 'holdFoldedS', { min: 0, max: 10, step: 0.5, label: 'fold hold s' });
-  tet.addBinding(CONFIG.tetris, 'trackStrength', { min: 0, max: 1, step: 0.05, label: 'board track' });
+  tet.addBinding(CONFIG.tetris, 'trackRate', { min: 0, max: 0.3, step: 0.01, label: 'board track' });
   tet.addBinding(CONFIG.tetris, 'lookAtBias', { min: 0, max: 0.6, step: 0.05, label: 'board center' });
 
   p.addButton({ title: 'reseed' }).on('click', () => {
