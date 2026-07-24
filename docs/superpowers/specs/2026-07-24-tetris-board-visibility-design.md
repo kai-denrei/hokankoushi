@@ -49,3 +49,19 @@ All behaviors play-mode only; ambient/auto untouched.
   `|wrap(__camAng − boardBearing)|` settles < 0.7 rad; ambient torus unchanged (screenshot).
 - Superformula in play passes in ≈ 6.5 s total vs ≈ 16 s for torus (phase-sampled timings).
 - Regression: flat-beat homing still frontal; ambient orbit free; pause; no page errors.
+
+## Amendment: smooth bias, not forced angle (operator correction)
+
+The position-domain homing lurched: the target bearing was applied unfiltered, and the mean
+normal's sign correction can flip the bearing ~180° in one frame. Replaced with a
+**rate-limited velocity servo**:
+
+- The board direction vector (centroid + sign-corrected normal) is low-pass filtered in
+  vector space (rate 0.02/frame) — sign flips glide through zero instead of jumping.
+- A tracking offset `tetrisTrackOff` creeps toward the filtered bearing, its per-frame change
+  clamped to `CONFIG.tetris.trackRate` rad/s (default 0.08; ambient orbit is 0.04). Camera
+  angular velocity is therefore bounded by `orbitSpeed + trackRate` — staccato is impossible.
+- Gated by the existing eased play weight; eases back to 0 when play ends or during the flat
+  beat (whose frontal homing is unchanged).
+- `lookAtBias` drops to 0.15 and uses a low-pass-filtered centroid.
+- Panel: 'board track' becomes `trackRate` (0–0.3 rad/s step 0.01); `trackStrength` removed.
