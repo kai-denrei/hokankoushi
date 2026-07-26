@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="c89abf1f">
+<meta name="cb" content="6e7fc7f5">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -1679,9 +1679,9 @@ function switchTarget(name) {
 // Pick a new random shape for the tour, never the same one twice in a row.
 // Play mode prunes the shapes that make the board unreadable (crushed, occluded
 // or edge-on). Manual picks (keys 1–9, panel dropdown) stay unrestricted.
-const TETRIS_PLAY_BAN = new Set(['sphericalHarmonic', 'sphereBand', 'swissRoll']);
+const TETRIS_PLAY_BAN = new Set(['sphericalHarmonic', 'sphereBand', 'swissRoll', 'superformula']);
 const TETRIS_PLAY_PHASE = { torus: { du: 0, dv: 0.5 } };   // see sampleShape
-const TETRIS_PLAY_SHAPE_SPEED = { superformula: 2.5 };     // shapes that flash by in play
+const TETRIS_PLAY_SHAPE_SPEED = {};     // per-shape fold-speed boosts during play (none active)
 function tourCandidates() {
   return TARGET_NAMES.filter((n) =>
     n !== CONFIG.morph.target && !(tetrisMode === 'play' && TETRIS_PLAY_BAN.has(n)));
@@ -1706,10 +1706,10 @@ function showShapeName(name) {  // display name via the panel's SHAPE_OPTS ("swi
   clearTimeout(shapeNameTimer);
   shapeNameTimer = setTimeout(() => shapeNameEl.classList.remove('on'), 2200);
 }
-function skipToNext() {
+function skipToNext(force) {
   if (skipMorph) return;             // re-entrancy guard: don't restart a morph in flight
   const others = tourCandidates();
-  const next = others[(Math.random() * others.length) | 0];
+  const next = force || others[(Math.random() * others.length) | 0];
   showShapeName(next);
   if (reduce) {                      // static path: swap straight to the finished shape
     CONFIG.morph.target = currentTarget = next; buildTarget(next); CONFIG.shape.blend = 0;
@@ -2135,6 +2135,10 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
   if (morphT < 0.05 * CONFIG.morph.duration) {
     buildTarget(CONFIG.morph.target); buildTargetB(CONFIG.shape.targetB); updateDust(1);
   }
+  // Bypass tetris-banned shapes on entering play: if the active shape is one the
+  // tour now prunes (e.g. superformula), smoothly re-anchor to the board-friendly
+  // torus so it never lingers over the play area.
+  if (mode === 'play' && TETRIS_PLAY_BAN.has(CONFIG.morph.target)) skipToNext('torus');
   if (on && !scorePatch) initScoreMesh();      // line-clear odometer, lit on the sheet
   if (scorePatch) { scorePatch.mesh.visible = on; scoreDrawn = -1; hiDrawn = -1; if (!on) hiPatch.mesh.visible = false; }
   if (reduce) {                                // static path: draw one settled frame
