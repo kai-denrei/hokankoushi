@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="6e7fc7f5">
+<meta name="cb" content="7dbc53b1">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -356,6 +356,11 @@ const CONFIG = {
     holdFoldedS: 2,        // play mode: seconds at full fold (ambient uses morph.holdFolded)
     trackRate: 0.08,       // play mode: max extra rad/s the camera drifts toward the board (0 = off)
     lookAtBias: 0.15,      // play mode: lerp of camera target toward the (smoothed) board centroid
+  },
+  conway: {                // "experimental" flyout: Conway's Game of Life on the full lattice
+    tickMs: 120,           // generation interval (≈ 8 gen/s)
+    seedCount: 7,          // known patterns dropped per seed
+    reseedIdleS: 8,        // reseed after this long with no new configuration (0 = never)
   },
 };
 
@@ -901,6 +906,7 @@ let PIECE_RGB = [null];
 function refreshTetrisColors() {   // 7 stations along the active ramp; piece type t → t/8
   PIECE_RGB = [null];
   for (let t = 1; t <= 7; t++) PIECE_RGB.push(cmapJS(CONFIG.palette.colormap, t / 8));
+  golColor = cmapJS(CONFIG.palette.colormap, 0.62);   // Life cells ride the same ramp
   if (window.__tetris) window.__tetris.dirty = true;
   scoreDrawn = -1; hiDrawn = -1;   // score digits repaint in the new palette too
 }
@@ -1316,6 +1322,185 @@ function updateTetrisFrame(clock, dt) {
   if (tetrisParticles) tetrisParticles.material.uniforms.uColor.value.set(CONFIG.palette.nodeHot);
   updateScoreFrame();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Experiment overlay — Conway's Game of Life on the whole 64×64 lattice.
+// The colony lives on the sheet: each live cell is a lit quad pinned to the four
+// lattice vertices it spans, sampled from the shared `positions` buffer every
+// frame, so the game folds onto shapes / wobbles / ripples for free. B3/S23 with
+// toroidal wrap. Lazy-built + invisible when off; mutually exclusive with tetris.
+// Per-frame cost scales with population (only live cells are written).
+// ─────────────────────────────────────────────────────────────────────────────
+const GOL_W = COLS - 1, GOL_H = ROWS - 1, GOL_N = GOL_W * GOL_H;  // cells span vertex quads
+let golOn = false;
+let golCells = new Uint8Array(GOL_N), golNext = new Uint8Array(GOL_N);
+let golMesh = null, golPosArr = null, golColArr = null;
+let golLastTick = 0, golLastNewHash = 0, golHashes = [];
+let golColor = new THREE.Color(0.35, 0.8, 1);   // overwritten from the palette ramp
+
+// Known patterns (relative cell coords). A handful are dropped at random on seed.
+const GOL_PATTERNS = (() => {
+  const pulsar = [];
+  const bars = { 0:[2,3,4,8,9,10], 2:[0,5,7,12], 3:[0,5,7,12], 4:[0,5,7,12],
+                 5:[2,3,4,8,9,10], 7:[2,3,4,8,9,10], 8:[0,5,7,12], 9:[0,5,7,12],
+                 10:[0,5,7,12], 12:[2,3,4,8,9,10] };
+  for (const y in bars) for (const x of bars[y]) pulsar.push([x, +y]);
+  return {
+    block:   [[0,0],[1,0],[0,1],[1,1]],
+    beehive: [[1,0],[2,0],[0,1],[3,1],[1,2],[2,2]],
+    loaf:    [[1,0],[2,0],[0,1],[3,1],[1,2],[3,2],[2,3]],
+    blinker: [[0,0],[1,0],[2,0]],
+    toad:    [[1,0],[2,0],[3,0],[0,1],[1,1],[2,1]],
+    beacon:  [[0,0],[1,0],[0,1],[3,2],[2,3],[3,3]],
+    glider:  [[1,0],[2,1],[0,2],[1,2],[2,2]],
+    lwss:    [[0,0],[3,0],[4,1],[0,2],[4,2],[1,3],[2,3],[3,3],[4,3]],
+    pentadecathlon: [[2,0],[7,0],[0,1],[1,1],[3,1],[4,1],[5,1],[6,1],[8,1],[9,1],[2,2],[7,2]],
+    rpentomino: [[1,0],[2,0],[0,1],[1,1],[1,2]],
+    pulsar,
+  };
+})();
+// One of the 8 dihedral orientations (rotations + reflections) of the square.
+function golOrient(x, y, o) {
+  switch (o & 7) {
+    case 0: return [x, y];    case 1: return [-y, x];
+    case 2: return [-x, -y];  case 3: return [y, -x];
+    case 4: return [-x, y];   case 5: return [x, -y];
+    case 6: return [y, x];    default: return [-y, -x];
+  }
+}
+function golSeed() {
+  golCells.fill(0);
+  const names = Object.keys(GOL_PATTERNS);
+  for (let i = 0; i < CONFIG.conway.seedCount; i++) {
+    const pat = GOL_PATTERNS[names[(Math.random() * names.length) | 0]];
+    const o = (Math.random() * 8) | 0;
+    const ox = (Math.random() * GOL_W) | 0, oy = (Math.random() * GOL_H) | 0;
+    for (const [px, py] of pat) {
+      const t = golOrient(px, py, o);
+      const x = (((ox + t[0]) % GOL_W) + GOL_W) % GOL_W;
+      const y = (((oy + t[1]) % GOL_H) + GOL_H) % GOL_H;
+      golCells[y * GOL_W + x] = 1;
+    }
+  }
+  golHashes = []; golLastNewHash = clock;
+}
+function golStep() {   // B3/S23, toroidal wrap
+  const W = GOL_W, H = GOL_H, c = golCells, n = golNext;
+  for (let y = 0; y < H; y++) {
+    const yu = ((y - 1) + H) % H, yd = (y + 1) % H, row = y * W, ru = yu * W, rd = yd * W;
+    for (let x = 0; x < W; x++) {
+      const xl = ((x - 1) + W) % W, xr = (x + 1) % W;
+      const cnt = c[ru + xl] + c[ru + x] + c[ru + xr]
+                + c[row + xl]            + c[row + xr]
+                + c[rd + xl] + c[rd + x] + c[rd + xr];
+      n[row + x] = (cnt === 3 || (cnt === 2 && c[row + x])) ? 1 : 0;
+    }
+  }
+  const t = golCells; golCells = golNext; golNext = t;
+}
+function golPopulation() { let p = 0; for (let i = 0; i < GOL_N; i++) p += golCells[i]; return p; }
+function golHash() {   // FNV-1a over the grid — cheap cycle/stagnation detector
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < GOL_N; i++) { h ^= golCells[i]; h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+// One generation + auto-reseed policy (dead colony, or no new configuration for a while).
+function golTick() {
+  golStep();
+  if (golPopulation() === 0) { golSeed(); return; }
+  const h = golHash();
+  if (golHashes.indexOf(h) === -1) {
+    golHashes.push(h); if (golHashes.length > 48) golHashes.shift();
+    golLastNewHash = clock;
+  } else if (CONFIG.conway.reseedIdleS > 0 && clock - golLastNewHash > CONFIG.conway.reseedIdleS) {
+    golSeed();
+  }
+}
+function golInitMesh() {
+  golPosArr = new Float32Array(GOL_N * 4 * 3);
+  golColArr = new Float32Array(GOL_N * 4 * 4);
+  const idx = [];
+  for (let cell = 0; cell < GOL_N; cell++) { const b = cell * 4; idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
+  const g = new THREE.BufferGeometry();
+  g.setIndex(idx);
+  const pa = new THREE.BufferAttribute(golPosArr, 3); pa.setUsage(THREE.DynamicDrawUsage);
+  const ca = new THREE.BufferAttribute(golColArr, 4); ca.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pa);
+  g.setAttribute('aColor', ca);
+  // Same cell-quad material the tetris overlay uses (fog + alpha discard).
+  const m = new THREE.ShaderMaterial({
+    uniforms: { uFogDensity: { value: CONFIG.palette.fog } },
+    vertexShader: /* glsl */`
+      attribute vec4 aColor; varying vec4 vColor; varying float vFogDepth;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vFogDepth = -mv.z; vColor = aColor;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: /* glsl */`
+      precision highp float;
+      uniform float uFogDensity; varying vec4 vColor; varying float vFogDepth;
+      void main() {
+        if (vColor.a < 0.004) discard;
+        float fog = exp(-uFogDensity * uFogDensity * vFogDepth * vFogDepth);
+        gl_FragColor = vec4(vColor.rgb, vColor.a * fog);
+      }`,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  });
+  golMesh = new THREE.Mesh(g, m);
+  golMesh.frustumCulled = false;
+  golMesh.renderOrder = 2;
+  golMesh.visible = false;
+  scene.add(golMesh);
+}
+// Cells align to integer lattice vertices, so read positions directly (no bilinear).
+function golVertInto(out, u, v) { const i = (v * COLS + u) * 3; out[0] = positions[i]; out[1] = positions[i + 1]; out[2] = positions[i + 2]; }
+function golUpdateFrame() {
+  if (!golMesh) return;
+  let vi = 0, live = 0;
+  for (let y = 0; y < GOL_H; y++) {
+    for (let x = 0; x < GOL_W; x++) {
+      if (!golCells[y * GOL_W + x]) continue;
+      // Lift the quad slightly along the (interior-clamped) surface normal.
+      patchNormalInto(_tnv, Math.min(COLS - 2, Math.max(1, x)), Math.min(ROWS - 2, Math.max(1, y)));
+      for (let k = 0; k < 4; k++) {              // corners (x+k&1, y+(k>>1)) — matches index winding
+        golVertInto(_tpv, x + (k & 1), y + (k >> 1));
+        const o = vi * 3;
+        golPosArr[o]     = _tpv[0] + _tnv[0] * TETRIS_LIFT;
+        golPosArr[o + 1] = _tpv[1] + _tnv[1] * TETRIS_LIFT;
+        golPosArr[o + 2] = _tpv[2] + _tnv[2] * TETRIS_LIFT;
+        const co = vi * 4;
+        golColArr[co] = golColor.r; golColArr[co + 1] = golColor.g; golColArr[co + 2] = golColor.b; golColArr[co + 3] = 0.92;
+        vi++;
+      }
+      live++;
+    }
+  }
+  const geo = golMesh.geometry;
+  geo.setDrawRange(0, live * 6);               // only live cells are indexed
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.aColor.needsUpdate = true;
+  golMesh.material.uniforms.uFogDensity.value = CONFIG.palette.fog;
+}
+function setConway(on) {
+  golOn = on;
+  experiments.conway.on = on;
+  if (on) {
+    if (tetrisMode !== 'off') setTetrisMode('off');   // exclusive with tetris
+    if (!golMesh) golInitMesh();
+    golColor = cmapJS(CONFIG.palette.colormap, 0.62);
+    golSeed();
+    golLastTick = clock;
+    golMesh.visible = true;
+    if (reduce) { golUpdateFrame(); renderReducedStatic(); }
+  } else if (golMesh) {
+    golMesh.visible = false;
+  }
+  if (expOpen) renderExpMenu();
+}
+window.__golPop = () => (golOn ? golPopulation() : 0);
+window.__golStep = () => { golTick(); if (golMesh) golUpdateFrame(); return golPopulation(); };
+window.__golSeed = () => { golSeed(); if (golMesh) golUpdateFrame(); };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sparkles — fake BMU activations. Respawn the oldest on the folding front.
@@ -1880,6 +2065,10 @@ function frame(now) {
     if (!paused) tetris.step(clock);
     updateTetrisFrame(clock, paused ? 0 : dt);
   }
+  if (golOn) {                                  // Game of Life rides the fresh positions too
+    if (!paused && clock - golLastTick >= CONFIG.conway.tickMs / 1000) { golTick(); golLastTick = clock; }
+    golUpdateFrame();
+  }
   if (!paused) {                      // ease dust toward the (blended) target — no jumps
     // the tesseract target moves every frame; once it's folded, track it tightly so dust
     // rides the surface instead of trailing behind (still eases during a fold-in / switch).
@@ -2030,6 +2219,13 @@ if (!reduce) {
         if (ripples.length > 8) ripples.shift();
       }
     }
+    if (golOn) {                                   // click also toggles the Life cell you hit
+      const gi = nearestVertex(nx, ny);
+      if (gi >= 0) {
+        const u = Math.min(GOL_W - 1, gi % COLS), v = Math.min(GOL_H - 1, (gi / COLS) | 0);
+        golCells[v * GOL_W + u] ^= 1;
+      }
+    }
   });
   window.addEventListener('pointerup', (e) => { if (e.pointerType === 'touch') leave(); });
   document.addEventListener('pointerleave', leave);
@@ -2088,6 +2284,7 @@ addCorner(nextBtn, () => false);
 const experiments = {
   tetrisAuto: { label: 'tetris auto', on: false, toggle() {} },
   tetrisPlay: { label: 'tetris play', on: false, toggle() {} },
+  conway:     { label: 'game of life', on: false, toggle() {} },
 };
 const expBtn = document.getElementById('exp');
 const expMenu = document.getElementById('expMenu');
@@ -2118,6 +2315,7 @@ addCorner(expBtn, () => expOpen);
 // changes hands). Fresh enable from fully-off starts clean.
 function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
   const wasOff = tetrisMode === 'off';
+  if (mode !== 'off' && golOn) setConway(false);   // exclusive with Game of Life
   tetrisMode = mode;
   experiments.tetrisAuto.on = mode === 'auto';
   experiments.tetrisPlay.on = mode === 'play';
@@ -2156,6 +2354,7 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
 }
 experiments.tetrisAuto.toggle = (on) => setTetrisMode(on ? 'auto' : 'off');
 experiments.tetrisPlay.toggle = (on) => setTetrisMode(on ? 'play' : 'off');
+experiments.conway.toggle = (on) => setConway(on);
 window.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') return;
   for (const hs of hotspots) hs.target = smoothstep(240, 70, Math.hypot(e.clientX - hs.anchor.x, e.clientY - hs.anchor.y));
@@ -2307,6 +2506,12 @@ function buildBindings(p) {
   tet.addBinding(CONFIG.tetris, 'holdFoldedS', { min: 0, max: 10, step: 0.5, label: 'fold hold s' });
   tet.addBinding(CONFIG.tetris, 'trackRate', { min: 0, max: 0.3, step: 0.01, label: 'board track' });
   tet.addBinding(CONFIG.tetris, 'lookAtBias', { min: 0, max: 0.6, step: 0.05, label: 'board center' });
+
+  const gol = p.addFolder({ title: 'game of life', expanded: false });
+  gol.addBinding(CONFIG.conway, 'tickMs', { min: 30, max: 500, step: 10, label: 'gen ms' });
+  gol.addBinding(CONFIG.conway, 'seedCount', { min: 1, max: 20, step: 1, label: 'seed count' });
+  gol.addBinding(CONFIG.conway, 'reseedIdleS', { min: 0, max: 30, step: 1, label: 'reseed idle s' });
+  gol.addButton({ title: 'reseed life' }).on('click', () => { if (golOn) { golSeed(); if (reduce) { golUpdateFrame(); renderReducedStatic(); } } });
 
   p.addButton({ title: 'reseed' }).on('click', () => {
     if (skipMorph) { skipMorph = null; CONFIG.shape.blend = 0; }   // cancel an in-flight skip morph
