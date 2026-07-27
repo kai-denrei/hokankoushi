@@ -7,8 +7,16 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="2181c224">
+<meta name="cb" content="83439ab2">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
+<!-- PWA / mobile -->
+<meta name="theme-color" content="#050807">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="neural sheet">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon-180.png">
+<link rel="manifest" href="./manifest.webmanifest">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
      swipe-navigation (history back/forward) from hijacking tetris-play swipes. */
@@ -44,10 +52,24 @@
   }
   .corner svg { width: 22px; height: 22px; }
   .corner:hover { color: #ffe9a3; }
-  .corner.tr { top: 14px; right: 14px; }
-  .corner.br { bottom: 14px; right: 14px; }
-  .corner.tl { top: 14px; left: 14px; }
-  .corner.bl { bottom: 14px; left: 14px; }
+  /* Safe-area insets so the corner buttons clear the notch / status bar / home indicator. */
+  .corner.tr { top: calc(14px + env(safe-area-inset-top)); right: calc(14px + env(safe-area-inset-right)); }
+  .corner.br { bottom: calc(14px + env(safe-area-inset-bottom)); right: calc(14px + env(safe-area-inset-right)); }
+  .corner.tl { top: calc(14px + env(safe-area-inset-top)); left: calc(14px + env(safe-area-inset-left)); }
+  .corner.bl { bottom: calc(14px + env(safe-area-inset-bottom)); left: calc(14px + env(safe-area-inset-left)); }
+  /* Install / Add-to-Home-Screen hint — subtle, dismissible, mobile-only, shown once. */
+  #a2hs { position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(16px + env(safe-area-inset-bottom)); z-index: 40; max-width: 88vw;
+    display: none; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px;
+    background: rgba(10,18,16,.88); border: 1px solid rgba(127,216,196,.22); color: #cfeee6;
+    font: 12.5px/1.35 -apple-system, system-ui, sans-serif;
+    -webkit-backdrop-filter: blur(9px); backdrop-filter: blur(9px);
+    box-shadow: 0 6px 22px rgba(0,0,0,.42); opacity: 0; transition: opacity .4s; }
+  #a2hs.on { display: flex; opacity: 1; }
+  #a2hs b { color: #ffe9a3; font-weight: 600; }
+  #a2hs button { font: inherit; cursor: pointer; border-radius: 7px; padding: 5px 10px;
+    border: 1px solid rgba(127,216,196,.3); background: rgba(127,216,196,.14); color: #eafff8; }
+  #a2hs .x { border: none; background: none; color: rgba(207,238,230,.5); padding: 4px 6px; font-size: 15px; }
   #gear:hover { transform: rotate(35deg); }
   #gear.open { color: #ffe9a3; transform: rotate(90deg); }
   #aboutBtn.open { color: #ffe9a3; }
@@ -166,6 +188,7 @@
   </svg>
 </button>
 <div id="expMenu" role="menu" aria-label="experiments"></div>
+<div id="a2hs" role="dialog" aria-label="install app"></div>
 <div id="about">
   <h1>Neural Sheet</h1>
   <p class="sub">A faux self-organizing map — all interpolation, zero learning.</p>
@@ -2418,6 +2441,8 @@ function uiTick() {
     hs.el.style.pointerEvents = hs.op > 0.12 ? 'auto' : 'none';
   }
 }
+// Touch has no hover — reveal all corners briefly on load so they're discoverable.
+if (isTouch) { const until = performance.now() + 4500; for (const hs of hotspots) hs.revealUntil = until; }
 uiTick();
 
 // Lazy Tweakpane build. Fails gracefully (art keeps running) if the CDN is unreachable.
@@ -2627,4 +2652,44 @@ function buildBindings(p) {
   const ver = document.getElementById('cbver');           // click to copy the token
   if (ver) ver.addEventListener('click', () => { try { navigator.clipboard.writeText(token); } catch (e) {} });
 })();
+</script>
+<script>
+  // PWA: register the service worker (installable + offline). Non-blocking; safe on http-localhost.
+  if ('serviceWorker' in navigator) {
+    addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+  }
+  // Add-to-Home-Screen hint — mobile only, shown once, dismissible; never when already installed.
+  (function () {
+    const el = document.getElementById('a2hs');
+    if (!el) return;
+    const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    let dismissed = false; try { dismissed = localStorage.getItem('ns-a2hs') === '1'; } catch {}
+    const mobile = matchMedia('(hover: none)').matches || innerWidth < 700;
+    if (installed || dismissed || !mobile) return;
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    let deferred = null;
+    const done = () => { el.classList.remove('on'); try { localStorage.setItem('ns-a2hs', '1'); } catch {} };
+    function show() {
+      if (isIOS) {
+        el.innerHTML = '<span>Install: tap <b>Share</b>, then <b>Add to Home Screen</b></span>' +
+                       '<button class="x" aria-label="dismiss">✕</button>';
+        el.querySelector('.x').onclick = done;
+      } else if (deferred) {
+        el.innerHTML = '<span>Install <b>neural sheet</b>?</span>' +
+                       '<button class="go">Install</button><button class="x" aria-label="dismiss">✕</button>';
+        el.querySelector('.x').onclick = done;
+        el.querySelector('.go').onclick = async () => {
+          el.classList.remove('on'); deferred.prompt();
+          try { await deferred.userChoice; } catch {}
+          done();
+        };
+      } else { return; }
+      el.classList.add('on');
+      setTimeout(() => el.classList.remove('on'), 12000);   // never linger
+    }
+    if (isIOS) setTimeout(show, 6000);
+    else addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferred = e; setTimeout(show, 6000); });
+    addEventListener('appinstalled', done);
+  })();
 </script>
