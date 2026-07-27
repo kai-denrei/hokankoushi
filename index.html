@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <!-- Build token (bumped by scripts/bust.sh). Drives the version glyphs + favicon below. -->
-<meta name="cb" content="7dbc53b1">
+<meta name="cb" content="2181c224">
 <link rel="icon" type="image/svg+xml" id="cbfav" href="data:,">
 <style>
   /* overscroll-behavior: the page never scrolls, and containing it stops mobile
@@ -584,7 +584,7 @@ function sampleShape(name, arr) {
   // Play-mode re-anchoring: fractional phase shifts so the board patch lands on
   // the shape's visible face (torus: +0.5 v moves it from the inner throat to
   // the outer equator — seamless, the torus is closed in v).
-  const off = tetrisMode === 'play' ? TETRIS_PLAY_PHASE[name] : null;
+  const off = tetrisMode === 'play' ? shapeAnchor(name) : null;
   const out = [0, 0, 0];
   let cx = 0, cy = 0, cz = 0;
   for (let v = 0; v < ROWS; v++) {
@@ -1861,16 +1861,50 @@ function switchTarget(name) {
   resetTrail();
   newSeed();
 }
-// Pick a new random shape for the tour, never the same one twice in a row.
-// Play mode prunes the shapes that make the board unreadable (crushed, occluded
-// or edge-on). Manual picks (keys 1–9, panel dropdown) stay unrestricted.
-const TETRIS_PLAY_BAN = new Set(['sphericalHarmonic', 'sphereBand', 'swissRoll', 'superformula']);
-const TETRIS_PLAY_PHASE = { torus: { du: 0, dv: 0.5 } };   // see sampleShape
-const TETRIS_PLAY_SHAPE_SPEED = {};     // per-shape fold-speed boosts during play (none active)
+// Play-mode shape management — ONE table drives which shapes appear, how long
+// they linger, and where the board patch lands. The ambient tour is unaffected;
+// manual picks (keys 1–9, panel dropdown) stay unrestricted.
+//   tier:   'neutral' | 'moderate' | 'hard' | 'ban'  (readability class)
+//   anchor: { du, dv } fractional (u,v) phase shift applied in sampleShape so the
+//           board lands on a visible face (build-time only — no camera motion, so
+//           it can't jitter; see 2026-07-24-tetris-board-visibility "smooth bias").
+const TETRIS_SHAPE_META = {
+  torus:             { tier: 'neutral',  anchor: { du: 0, dv: 0.5 } },
+  pyramid:           { tier: 'neutral'  },
+  bipyramid:         { tier: 'moderate' },
+  mobius:            { tier: 'moderate' },
+  tesseract:         { tier: 'hard'     },
+  superformula:      { tier: 'ban'      },
+  swissRoll:         { tier: 'ban'      },
+  sphereBand:        { tier: 'ban'      },
+  sphericalHarmonic: { tier: 'ban'      },
+};
+// Fold-speed boost per tier: higher = folds faster + shorter folded hold, so hard
+// shapes flash by and neutral ones linger. (tierBoost, not shapeBoost — the latter
+// is a local in advanceTimeline.)
+const TETRIS_TIER_BOOST = { neutral: 1.0, moderate: 1.4, hard: 2.2 };
+function shapeTier(name)   { return (TETRIS_SHAPE_META[name] && TETRIS_SHAPE_META[name].tier) || 'neutral'; }
+function tierBoost(name)   { return TETRIS_TIER_BOOST[shapeTier(name)] || 1; }
+function shapeAnchor(name) { return (TETRIS_SHAPE_META[name] && TETRIS_SHAPE_META[name].anchor) || null; }
+// Tour candidates during play: drop banned shapes, and never follow a hard shape
+// with another hard one (a neutral/moderate recovery beat). If the ordering rule
+// empties the set, relax it (a hard shape beats none) — but never drop bans.
 function tourCandidates() {
-  return TARGET_NAMES.filter((n) =>
-    n !== CONFIG.morph.target && !(tetrisMode === 'play' && TETRIS_PLAY_BAN.has(n)));
+  const play = tetrisMode === 'play';
+  const lastHard = play && shapeTier(CONFIG.morph.target) === 'hard';
+  const ok = (n, strict) => n !== CONFIG.morph.target
+    && !(play && shapeTier(n) === 'ban')
+    && !(strict && lastHard && shapeTier(n) === 'hard');
+  let cands = TARGET_NAMES.filter((n) => ok(n, true));
+  if (cands.length === 0) cands = TARGET_NAMES.filter((n) => ok(n, false));
+  return cands;
 }
+// QA hooks for the play-mode shape system.
+window.__shapeMeta = TETRIS_SHAPE_META;
+window.__shapeTier = shapeTier;
+window.__tierBoost = tierBoost;
+window.__tourCandidates = () => tourCandidates();
+window.__target = () => currentTarget;
 function tourNext() {
   const others = tourCandidates();
   const next = others[(Math.random() * others.length) | 0];
@@ -1928,7 +1962,7 @@ function advanceTimeline(dt) {
   // readable flat window is where the player gets a fighting chance.
   const play = tetrisMode === 'play';
   // Confusing shapes flash by even faster (per-shape boost on top of the play scale).
-  const shapeBoost = play ? (TETRIS_PLAY_SHAPE_SPEED[m.target] || 1) : 1;
+  const shapeBoost = play ? tierBoost(m.target) : 1;
   const mdt = play ? dt * CONFIG.tetris.playTimeScale * shapeBoost : dt;
   if (phase === 'fold') {
     morphT += mdt;
@@ -1938,12 +1972,22 @@ function advanceTimeline(dt) {
     if (holdT >= (play ? CONFIG.tetris.holdFoldedS / shapeBoost : m.holdFolded)) {
       if (m.loopMode === 'reverse' || m.loopMode === 'tour') { phase = 'unfold'; }
       else if (m.loopMode === 'nextTarget') {
-        let ni = TARGET_NAMES.indexOf(currentTarget);
-        for (let s = 0; s < TARGET_NAMES.length; s++) {   // next allowed shape in sequence
-          ni = (ni + 1) % TARGET_NAMES.length;
-          if (!(tetrisMode === 'play' && TETRIS_PLAY_BAN.has(TARGET_NAMES[ni]))) break;
-        }
-        switchTarget(TARGET_NAMES[ni]);
+        // Next allowed shape in sequence: skip bans, and (strict) don't follow a
+        // hard shape with another hard one; relax the ordering rule if none remain.
+        const lastHard = tetrisMode === 'play' && shapeTier(currentTarget) === 'hard';
+        const seqNext = (strict) => {
+          let ni = TARGET_NAMES.indexOf(currentTarget);
+          for (let s = 0; s < TARGET_NAMES.length; s++) {
+            ni = (ni + 1) % TARGET_NAMES.length;
+            const nm = TARGET_NAMES[ni];
+            if (tetrisMode === 'play' && shapeTier(nm) === 'ban') continue;
+            if (strict && lastHard && shapeTier(nm) === 'hard') continue;
+            return ni;
+          }
+          return -1;
+        };
+        let ni = seqNext(true); if (ni < 0) ni = seqNext(false);
+        if (ni >= 0) switchTarget(TARGET_NAMES[ni]);
       } else { morphT = 0; phase = 'fold'; resetTrail(); newSeed(); } // restart
     }
   } else if (phase === 'unfold') {
@@ -2327,7 +2371,7 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
   tetris.controlled = mode === 'play';
   if (on && wasOff) { tetris.reset(); tetris.lastTick = clock; if (tpLife) tpLife.fill(0); }
   if (!on) tetrisHighScore = Math.max(tetrisHighScore, tetris.lines);   // abandoning banks the game
-  // Re-anchoring offsets (TETRIS_PLAY_PHASE) live in the target build; apply or
+  // Re-anchoring offsets (TETRIS_SHAPE_META.anchor) live in the target build; apply or
   // drop them now only if the sheet is near flat (no folded-state jump), else
   // they land at the next shape switch.
   if (morphT < 0.05 * CONFIG.morph.duration) {
@@ -2336,7 +2380,7 @@ function setTetrisMode(mode) {                 // 'off' | 'auto' | 'play'
   // Bypass tetris-banned shapes on entering play: if the active shape is one the
   // tour now prunes (e.g. superformula), smoothly re-anchor to the board-friendly
   // torus so it never lingers over the play area.
-  if (mode === 'play' && TETRIS_PLAY_BAN.has(CONFIG.morph.target)) skipToNext('torus');
+  if (mode === 'play' && shapeTier(CONFIG.morph.target) === 'ban') skipToNext('torus');
   if (on && !scorePatch) initScoreMesh();      // line-clear odometer, lit on the sheet
   if (scorePatch) { scorePatch.mesh.visible = on; scoreDrawn = -1; hiDrawn = -1; if (!on) hiPatch.mesh.visible = false; }
   if (reduce) {                                // static path: draw one settled frame

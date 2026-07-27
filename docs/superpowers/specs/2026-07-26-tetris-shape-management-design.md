@@ -1,6 +1,6 @@
 # Tetris Play — shape-management system (rating table → ordering + duration + anchor)
 
-**Date:** 2026-07-26 · **Status:** design approved (classification "as is for now"); **not yet implemented**
+**Date:** 2026-07-26 · **Status:** implemented 2026-07-27 (helper named `tierBoost`, not `shapeBoost`, to avoid a local-var clash in `advanceTimeline`; QA hooks `__shapeMeta`/`__shapeTier`/`__tierBoost`/`__tourCandidates`/`__target` added). Classification kept "as is for now".
 **Builds on:** `2026-07-24-tetris-board-visibility-design.md`, `2026-07-24-tetris-play-pacing-design.md`
 **Shipped precursor:** `fix: bypass superformula during tetris play` (commit 108c243) — added `superformula`
 to the play ban and re-anchored to torus on entering play.
